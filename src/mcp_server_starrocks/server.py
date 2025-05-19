@@ -12,26 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import ast
+import asyncio
 import math
 import sys
 import os
 import io
 import time
 import traceback
-from mcp.server.models import InitializationOptions
-import mcp.types as types
-from mcp.server import NotificationOptions, Server
-import mcp.server.stdio
-from pydantic import AnyUrl
+from fastmcp import FastMCP, Image
+from fastmcp.exceptions import ToolError
+from typing import Annotated
+from pydantic import Field
 from mysql.connector import Error as MySQLError
 import mysql.connector
 import pandas as pd
 import plotly.express as px
 import base64
 
-SERVER_VERSION = "0.1.2"
-
-server = Server("mcp-server-starrocks", SERVER_VERSION)
+mcp = FastMCP('mcp-server-starrocks')
 
 global_connection = None
 default_database = os.getenv('STARROCKS_DB')
@@ -40,6 +38,7 @@ overview_length_limit = int(os.getenv('STARROCKS_OVERVIEW_LIMIT', str(20000)))
 # Global cache for table overviews: {(db_name, table_name): overview_string}
 global_table_overview_cache = {}
 
+mcp_transport = os.getenv('MCP_TRANSPORT_MODE', 'stdio')
 
 def get_connection():
     global global_connection, default_database
@@ -210,10 +209,11 @@ def _get_table_details(conn, db_name, table_name, limit=None):
     return overview_string
 
 
-def handle_single_column_query(conn, query):
+def handle_single_column_query(query):
     # return csv like result set, with column names as first row
-    cursor = conn.cursor()
     try:
+        conn = get_connection()
+        cursor = conn.cursor()
         cursor.execute(query)
         rows = cursor.fetchall()
         if rows:
@@ -231,10 +231,12 @@ def handle_single_column_query(conn, query):
             cursor.close()
 
 
-def handle_read_query(conn, query):
+@mcp.tool(name="read_query", description="Execute a SELECT query or commands that return a ResultSet")
+def read_query(query: Annotated[str, Field(description="SQL query to execute")]) -> str:
     # return csv like result set, with column names as first row
-    cursor = conn.cursor()
     try:
+        conn = get_connection()
+        cursor = conn.cursor()
         cursor.execute(query)
         if cursor.description:  # Check if there's a result set description
             columns = [desc[0] for desc in cursor.description]  # Get column names
@@ -269,11 +271,12 @@ def handle_read_query(conn, query):
         if cursor:
             cursor.close()
 
-
-def handle_write_query(conn, query):
-    cursor = conn.cursor()
-    start_time = time.time()
+@mcp.tool(name="write_query", description="Execute a DDL/DML or other StarRocks command that do not have a ResultSet")
+def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> str:
     try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        start_time = time.time()
         cursor.execute(query)
         conn.commit()  # Commit changes for DML/DDL
         affected_rows = cursor.rowcount
@@ -295,18 +298,6 @@ def handle_write_query(conn, query):
     finally:
         if cursor:
             cursor.close()
-
-
-@server.list_resources()
-async def handle_list_resources() -> list[types.Resource]:
-    return [
-        types.Resource(
-            uri="starrocks:///databases",
-            name="All Databases",
-            description="List all databases in StarRocks",
-            mimeType="text/plain"
-        )
-    ]
 
 
 SR_PROC_DESC = '''
@@ -332,159 +323,21 @@ Internal information exposed by StarRocks similar to linux /proc, following are 
 '/catalog'	Shows the information of catalogs.
 '''
 
+@mcp.resource(uri="starrocks:///databases", name="All Databases", description="List all databases in StarRocks", mime_type="text/plain")
+def get_all_databases() -> str:
+    return handle_single_column_query("SHOW DATABASES")
 
-@server.list_resource_templates()
-async def handle_list_resource_templates() -> list[types.ResourceTemplate]:
-    return [
-        types.ResourceTemplate(
-            uriTemplate="starrocks:///{db}/{table}/schema",
-            name="Table Schema",
-            description="Get the schema of a table using SHOW CREATE TABLE",
-            mimeType="text/plain"
-        ),
-        types.ResourceTemplate(
-            uriTemplate="starrocks:///{db}/tables",
-            name="Database Tables",
-            description="List all tables in a specific database",
-            mimeType="text/plain"
-        ),
-        types.ResourceTemplate(
-            uriTemplate="proc:///{+path}",
-            name="System internal information",
-            description=SR_PROC_DESC,
-            mimeType="text/plain"
-        )
-    ]
+@mcp.resource(uri="starrocks:///{db}/{table}/schema", name="Table Schema", description="Get the schema of a table using SHOW CREATE TABLE", mime_type="text/plain")
+def get_table_schema(db: str, table: str) -> str:
+    return handle_single_column_query(f"SHOW CREATE TABLE {db}.{table}")
 
+@mcp.resource(uri="starrocks:///{db}/tables", name="Database Tables", description="List all tables in a specific database", mime_type="text/plain")
+def get_database_tables(db: str) -> str:
+    return handle_single_column_query(f"SHOW TABLES FROM {db}")
 
-@server.read_resource()
-async def handle_read_resource(uri: AnyUrl) -> str:
-    try:
-        conn = get_connection()
-        if uri.scheme == 'proc':
-            return handle_read_query(conn, f"show proc '{uri.path}'")
-        if uri.scheme != "starrocks":
-            raise ValueError(f"Unsupported URI scheme: {uri.scheme}")
-
-        path_parts = uri.path.strip('/').split('/')
-        if len(path_parts) == 3 and path_parts[2] == "schema":
-            db, table = path_parts[:2]
-            return handle_single_column_query(conn, f"SHOW CREATE TABLE {db}.{table}")
-        elif len(path_parts) == 1 and path_parts[0] == "databases":
-            return handle_single_column_query(conn, "SHOW DATABASES")
-        elif len(path_parts) == 2 and path_parts[1] == "tables":
-            return handle_single_column_query(conn, f"SHOW TABLES FROM {path_parts[0]}")
-        else:
-            raise ValueError(f"Unsupported URI path: {uri.path}")
-    except MySQLError as e:  # Catch DB errors
-        reset_connection()
-        # Return error message suitable for MCP client
-        return f"Database Error: {str(e)}"
-    except Exception as e:
-        reset_connection()
-        raise ValueError(f"Error retrieving resource: {str(e)}")
-
-
-@server.list_prompts()
-async def handle_list_prompts() -> list[types.Prompt]:
-    return []
-
-
-@server.get_prompt()
-async def handle_get_prompt(name: str, arguments: dict[str, str] | None) -> types.GetPromptResult:
-    raise ValueError(f"Unsupported get_prompt")
-
-
-@server.list_tools()
-async def handle_list_tools() -> list[types.Tool]:
-    table_overview_desc = "Get an overview of a specific table: columns, sample rows (up to 5), and total row count. Uses cache unless refresh=true."
-    table_overview_prop_desc = "<db>.<table> required."
-    if default_database:
-        table_overview_prop_desc = f"[db.]<table> required. Uses default database '{default_database}' if `db` part is omitted."
-
-    db_overview_desc = "Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True."
-    db_overview_prop_desc = "Database name required."
-    if default_database:
-        db_overview_prop_desc = f"Database name. Optional: uses the default database '{default_database}' if not provided."
-    return [
-        types.Tool(
-            name="read_query",
-            description="Execute a SELECT query or commands that return a ResultSet",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "SQL query to execute"},
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="write_query",
-            description="Execute an DDL/DML or other StarRocks command that do not have a ResultSet",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "SQL to execute"},
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="query_and_plotly_chart",
-            description="using sql `query` to extract data from database, then using python `plotly_expr` to generate a chart for UI to display",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "SQL query to execute",
-                    },
-                    "plotly_expr": {
-                        "type": "string",
-                        "description": "a one function call expression, with 2 vars binded: `px` as `import plotly.express as px`, and `df` as dataframe generated by query `plotly_expr` example: `px.scatter(df, x=\"sepal_width\", y=\"sepal_length\", color=\"species\", marginal_y=\"violin\", marginal_x=\"box\", trendline=\"ols\", template=\"simple_white\")`",
-                    },
-                },
-            }
-        ),
-        types.Tool(
-            name="table_overview",
-            description=table_overview_desc,
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "table": {
-                        "type": "string",
-                        "description": table_overview_prop_desc,
-                    },
-                    "refresh": {
-                        "type": "boolean",
-                        "description": "Optional: Set to true to force refresh the overview, ignoring the cache. Defaults to false.",
-                        "default": False,
-                    }
-                },
-                "required": ["table"],
-            },
-        ),
-        types.Tool(
-            name="db_overview",
-            description=db_overview_desc,
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "db": {
-                        "type": "string",
-                        "description": db_overview_prop_desc,
-                    },
-                    "refresh": {
-                        "type": "boolean",
-                        "description": "Optional: Set to true to force refresh the overview, ignoring the cache. Defaults to false.",
-                        "default": False,
-                    }
-                },
-                "required": [] if default_database else ["db"]
-            },
-        ),
-    ]
+@mcp.resource(uri="proc:///{path*}", name="System internal information", description=SR_PROC_DESC, mime_type="text/plain")
+def get_system_internal_information(path: str) -> str:
+    return read_query(f"show proc '{path}'")
 
 
 def validate_plotly_expr(expr: str):
@@ -545,15 +398,14 @@ def validate_plotly_expr(expr: str):
                 keyword_name = kw.arg if kw.arg else '<unknown>'
                 raise ValueError(f"Keyword argument '{keyword_name}' contains a disallowed nested function call.")
 
-
-def query_and_plotly_chart(conn, query: str, plotly_expr: str):
+@mcp.tool(name="query_and_plotly_chart", description="using sql `query` to extract data from database, then using python `plotly_expr` to generate a chart for UI to display") 
+def query_and_plotly_chart(query: Annotated[str, Field(description="SQL query to execute")], plotly_expr: Annotated[str, Field(description="a one function call expression, with 2 vars binded: `px` as `import plotly.express as px`, and `df` as dataframe generated by query `plotly_expr` example: `px.scatter(df, x=\"sepal_width\", y=\"sepal_length\", color=\"species\", marginal_y=\"violin\", marginal_x=\"box\", trendline=\"ols\", template=\"simple_white\")`")]):
     """
     Executes an SQL query, creates a Pandas DataFrame, generates a Plotly chart
     using the provided expression, encodes the chart as a base64 PNG image,
     and returns it along with optional text.
 
     Args:
-        conn: A database connection object (DB-API 2.0 compliant).
         query: The SQL query string to execute.
         plotly_expr: A Python string expression using 'px' (plotly.express)
                      and 'df' (the DataFrame from the query) to generate a figure.
@@ -568,17 +420,18 @@ def query_and_plotly_chart(conn, query: str, plotly_expr: str):
                    pandas, plotly expression evaluation, or image generation,
                    after attempting to close the cursor.
     """
-    cursor = conn.cursor()
     try:
+        conn = get_connection()
+        cursor = conn.cursor()
         cursor.execute(query)
         # Check if cursor.description is None (happens for non-SELECT queries)
         if cursor.description is None:
-            return [types.TextContent(type="text", text=f'Query "{query}" did not return data suitable for plotting.')]
+            return f'Query "{query}" did not return data suitable for plotting.'
         column_names = [desc[0] for desc in cursor.description] if cursor.description else []
         rows = cursor.fetchall()
         df = pd.DataFrame(rows, columns=column_names)
         if df.empty:
-            return [types.TextContent(type="text", text='Query returned no data to plot.')]
+            return 'Query returned no data to plot.'
 
         # evaluate the plotly expression using px and df, get result figure as `fig`
         # SECURITY WARNING: eval() can execute arbitrary code. Only use this if
@@ -590,8 +443,7 @@ def query_and_plotly_chart(conn, query: str, plotly_expr: str):
         fig = eval(plotly_expr, {"px": px}, local_vars)  # Pass px in globals, df in locals
 
         if not hasattr(fig, 'to_image'):
-            raise ValueError(
-                f"The evaluated expression did not return a Plotly figure object. Result type: {type(fig)}")
+            raise ToolError(f"The evaluated expression did not return a Plotly figure object. Result type: {type(fig)}")
 
         img_bytes = fig.to_image(format='jpg', width=960, height=720)
         # save to tmp file for debugging
@@ -602,177 +454,149 @@ def query_and_plotly_chart(conn, query: str, plotly_expr: str):
         # Decode bytes to utf-8 string for easier handling (e.g., JSON serialization)
         img_base64_string = img_base64_bytes.decode('utf-8')
         return [
-            types.TextContent(type="text", text=f'dataframe data:\n{df}\nChart generated but for UI only'),
-            types.ImageContent(type="image", mimeType="image/jpg", data=img_base64_string)
+            f'dataframe data:\n{df}\nChart generated but for UI only',
+            Image(data=img_base64_string, mimeType="image/jpg")
         ]
     except (MySQLError, pd.errors.EmptyDataError) as db_pd_err:
         # Handle DB or Pandas specific errors gracefully
-        return [types.TextContent(type="text", text=f'Error during data fetching or processing: {db_pd_err}')]
+        return [f'Error during data fetching or processing: {db_pd_err}']
     except Exception as eval_err:
         # Handle errors during eval or image generation
-        return [types.TextContent(type="text", text=f'Error during chart generation: {eval_err}')]
+        return [f'Error during chart generation: {eval_err}']
     finally:
         # Ensure the cursor is always closed
         if cursor:
             cursor.close()
 
 
-@server.call_tool()
-async def handle_call_tool(
-        name: str, arguments: dict | None
-) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-    """
-    Handle tool execution requests.
-    Tools can modify server state and notify clients of changes.
-    """
+@mcp.tool(name="table_overview", description="Get an overview of a specific table: columns, sample rows (up to 5), and total row count. Uses cache unless refresh=true.")
+async def table_overview(
+    table: Annotated[str, Field(description="Table name, optionally prefixed with database name (e.g., 'db_name.table_name'). If database is omitted, uses the default database.")],
+    refresh: Annotated[bool, Field(description="Set to true to force refresh, ignoring cache. Defaults to false.")] = False
+) -> str:
     try:
         conn = get_connection()
-        if name == "read_query":
-            return [types.TextContent(type="text", text=handle_read_query(conn, arguments["query"]))]
+        if not table:
+            return "Error: Missing 'table' argument."
 
-        elif name == "write_query":
-            return [types.TextContent(type="text", text=handle_write_query(conn, arguments["query"]))]
+        # Parse table argument: [db.]<table>
+        parts = table.split('.', 1)
+        db_name = None
+        table_name = None
+        if len(parts) == 2:
+            db_name, table_name = parts[0], parts[1]
+        elif len(parts) == 1:
+            table_name = parts[0]
+            db_name = default_database  # Use default if only table name is given
 
-        elif name == "query_and_plotly_chart":
-            return query_and_plotly_chart(conn, arguments["query"], arguments['plotly_expr'])
+        if not table_name:  # Should not happen if table_arg exists, but check
+            return f"Error: Invalid table name format '{table}'."
+        if not db_name:
+            return f"Error: Database name not specified for table '{table_name}' and no default database is set."
 
-        elif name == "table_overview":
-            table_arg = arguments.get("table")
-            refresh = arguments.get("refresh", False)
-            if not table_arg:
-                return [types.TextContent(type="text", text="Error: Missing 'table' argument.")]
+        cache_key = (db_name, table_name)
 
-            # Parse table argument: [db.]<table>
-            parts = table_arg.split('.', 1)
-            db_name = None
-            table_name = None
-            if len(parts) == 2:
-                db_name, table_name = parts[0], parts[1]
-            elif len(parts) == 1:
-                table_name = parts[0]
-                db_name = default_database  # Use default if only table name is given
+        # Check cache
+        if not refresh and cache_key in global_table_overview_cache:
+            # print(f"Cache hit for table overview: {cache_key}") # Debug
+            return global_table_overview_cache[cache_key]
 
-            if not table_name:  # Should not happen if table_arg exists, but check
-                return [types.TextContent(type="text", text=f"Error: Invalid table name format '{table_arg}'.")]
-            if not db_name:
-                return [types.TextContent(type="text",
-                                          text=f"Error: Database name not specified for table '{table_name}' and no default database is set.")]
-
-            cache_key = (db_name, table_name)
-
-            # Check cache
-            if not refresh and cache_key in global_table_overview_cache:
-                # print(f"Cache hit for table overview: {cache_key}") # Debug
-                return [types.TextContent(type="text", text=global_table_overview_cache[cache_key])]
-
-            # Fetch details (will also update cache)
-            # print(f"Cache miss or refresh for table overview: {cache_key}") # Debug
-            overview_text = _get_table_details(conn, db_name, table_name, limit=overview_length_limit)
-            return [types.TextContent(type="text", text=overview_text)]
-
-        elif name == "db_overview":
-            db_name_arg = arguments.get("db")
-            refresh = arguments.get("refresh", False)
-
-            db_name = db_name_arg if db_name_arg else default_database
-            if not db_name:
-                return [types.TextContent(type="text",
-                                          text="Error: Database name not provided and no default database is set.")]
-
-            # List tables in the database
-            cursor = None
-            try:
-                cursor = conn.cursor()
-                query = f"SHOW TABLES FROM `{db_name}`"  # Use backticks
-                # print(f"Executing: {query}") # Debug
-                cursor.execute(query)
-                tables = [row[0] for row in cursor.fetchall()]
-            except MySQLError as e:
-                print(f"Error listing tables in '{db_name}': {e}")
-                reset_connection()
-                return [types.TextContent(type="text", text=f"Database Error listing tables in '{db_name}': {e}")]
-            except Exception as e:
-                print(f"Unexpected error listing tables in '{db_name}': {e}")
-                return [types.TextContent(type="text", text=f"Unexpected error listing tables in '{db_name}': {e}")]
-            finally:
-                if cursor:
-                    try:
-                        cursor.close()
-                    except Exception as ce:
-                        print(f"Warning: error closing cursor: {ce}")
-
-            if not tables:
-                return [types.TextContent(type="text", text=f"No tables found in database '{db_name}'.")]
-
-            all_overviews = [f"--- Overview for Database: `{db_name}` ({len(tables)} tables) ---"]
-            # print(f"Generating overview for {len(tables)} tables in '{db_name}' (refresh={refresh})") # Debug
-
-            total_length = 0
-            limit_per_table = overview_length_limit * (math.log10(len(tables)) + 1) // len(tables)  # Limit per table
-            for table_name in tables:
-                cache_key = (db_name, table_name)
-                overview_text = None
-
-                # Check cache first
-                if not refresh and cache_key in global_table_overview_cache:
-                    # print(f"Cache hit for db overview (table): {cache_key}") # Debug
-                    overview_text = global_table_overview_cache[cache_key]
-                else:
-                    # print(f"Cache miss or refresh for db overview (table): {cache_key}") # Debug
-                    # Fetch details for this table (will update cache via _get_table_details)
-                    overview_text = _get_table_details(conn, db_name, table_name, limit=limit_per_table)
-
-                all_overviews.append(overview_text)
-                all_overviews.append("\n")  # Add separator
-                total_length += len(overview_text)+1
-
-            return [types.TextContent(type="text", text="\n".join(all_overviews))]
-
-        # If tool name not found
-        return [types.TextContent(type="text", text=f"Error: Unknown tool name '{name}'")]
+        # Fetch details (will also update cache)
+        # print(f"Cache miss or refresh for table overview: {cache_key}") # Debug
+        overview_text = _get_table_details(conn, db_name, table_name, limit=overview_length_limit)
+        return overview_text
     except MySQLError as e:  # Catch DB errors at tool call level
         reset_connection()
-        return [types.TextContent(type="text", text=f"Database Error executing tool '{name}': {type(e).__name__}: {e}")]
+        return f"Database Error executing tool 'table_overview': {type(e).__name__}: {e}"
     except Exception as e:
         # Catch any other unexpected errors during tool execution
         reset_connection()  # Also reset connection on unexpected errors
         stack_trace = traceback.format_exc()
-        return [
-            types.TextContent(type="text",
-                              text=f"Unexpected Error executing tool '{name}': {type(e).__name__}: {e}\nStack Trace:\n{stack_trace}")]
+        return f"Unexpected Error executing tool 'table_overview': {type(e).__name__}: {e}\nStack Trace:\n{stack_trace}"
+
+
+@mcp.tool(name="db_overview", description="Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True. Do not change comments or string literals.")
+async def db_overview(
+    db: Annotated[str, Field(description="Database name. Optional: uses the default database if not provided.")] = default_database,
+    refresh: Annotated[bool, Field(description="Set to true to force refresh, ignoring cache. Defaults to false.")] = False
+) -> str:
+    try:
+        conn = get_connection()
+        db_name = db if db else default_database
+        if not db_name:
+            return "Error: Database name not provided and no default database is set."
+
+        # List tables in the database
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            query = f"SHOW TABLES FROM `{db_name}`"  # Use backticks
+            # print(f"Executing: {query}") # Debug
+            cursor.execute(query)
+            tables = [row[0] for row in cursor.fetchall()]
+        except MySQLError as e:
+            print(f"Error listing tables in '{db_name}': {e}")
+            reset_connection()
+            return f"Database Error listing tables in '{db_name}': {e}"
+        except Exception as e:
+            print(f"Unexpected error listing tables in '{db_name}': {e}")
+            return f"Unexpected error listing tables in '{db_name}': {e}"
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except Exception as ce:
+                    print(f"Warning: error closing cursor: {ce}")
+
+        if not tables:
+            return f"No tables found in database '{db_name}'."
+
+        all_overviews = [f"--- Overview for Database: `{db_name}` ({len(tables)} tables) ---"]
+        # print(f"Generating overview for {len(tables)} tables in '{db_name}' (refresh={refresh})") # Debug
+
+        total_length = 0
+        limit_per_table = overview_length_limit * (math.log10(len(tables)) + 1) // len(tables)  # Limit per table
+        for table_name in tables:
+            cache_key = (db_name, table_name)
+            overview_text = None
+
+            # Check cache first
+            if not refresh and cache_key in global_table_overview_cache:
+                # print(f"Cache hit for db overview (table): {cache_key}") # Debug
+                overview_text = global_table_overview_cache[cache_key]
+            else:
+                # print(f"Cache miss or refresh for db overview (table): {cache_key}") # Debug
+                # Fetch details for this table (will update cache via _get_table_details)
+                overview_text = _get_table_details(conn, db_name, table_name, limit=limit_per_table)
+
+            all_overviews.append(overview_text)
+            all_overviews.append("\n")  # Add separator
+            total_length += len(overview_text)+1
+
+        return "\n".join(all_overviews)
+
+    except MySQLError as e:  # Catch DB errors at tool call level
+        reset_connection()
+        return f"Database Error executing tool 'db_overview': {type(e).__name__}: {e}"
+    except Exception as e:
+        # Catch any other unexpected errors during tool execution
+        reset_connection()  # Also reset connection on unexpected errors
+        stack_trace = traceback.format_exc()
+        return f"Unexpected Error executing tool 'db_overview': {type(e).__name__}: {e}\nStack Trace:\n{stack_trace}"
 
 
 async def main():
-    # Run the server using stdin/stdout streams
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="mcp-server-starrocks",
-                server_version=SERVER_VERSION,
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
-        )
+    await mcp.run_async(transport=mcp_transport)
 
 
 async def run_tool_test():
-    result_table = await handle_call_tool("table_overview", {"table":"quickstart.crashdata"})
+    result_table = await table_overview("quickstart.crashdata")
     print("Result:")
-    for item in result_table:
-        if isinstance(item, types.TextContent):
-            print(item.text)
-        else:
-            print(f"Received non-text content: {type(item)}")
+    print(result_table)
     print("-" * 20)
 
 
 if __name__ == "__main__":
-    import asyncio
-
     # Example usage (requires environment variables set)
     print(f"Default database (STARROCKS_DB): {default_database or 'Not Set'}")
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
