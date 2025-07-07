@@ -28,6 +28,7 @@ import mysql.connector
 import pandas as pd
 import plotly.express as px
 import base64
+import re
 
 mcp = FastMCP('mcp-server-starrocks')
 
@@ -301,6 +302,15 @@ def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> s
         if cursor:
             cursor.close()
 
+def analyze_query(query: Annotated[str, Field(description="Analyze query via profile")]) -> str:
+    # check input is standard uuid format or not
+    regex = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+    if regex.match(query): # input is query id, standard uuid format
+        return read_query(f"ANALYZE PROFILE FROM '{query}'")
+    elif query.lstrip().lower().startswith(("select", "insert")): # input is query sql, only support SELECT and INSERT type SQL
+        return read_query(f"EXPLAIN ANALYZE {query}")
+    else:
+        return f"Failed to analyze the query, the reasons maybe: 1.not a standard format uuid query id; 2.only support SELECT and INSERT type SQL."
 
 SR_PROC_DESC = '''
 Internal information exposed by StarRocks similar to linux /proc, following are some common paths:
@@ -613,6 +623,8 @@ async def main():
                  description="Get an overview of a specific table: columns, sample rows (up to 5), and total row count. Uses cache unless refresh=true"+db_suffix)
     mcp.add_tool(db_overview,
                  description="Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True"+db_suffix)
+    mcp.add_tool(analyze_query,
+                 description="Analyze query via profile"+db_suffix)
     await mcp.run_async(transport=mcp_transport)
 
 
