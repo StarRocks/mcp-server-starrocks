@@ -310,7 +310,7 @@ def analyze_query(query: Annotated[str, Field(description="Analyze query via pro
     elif query.lstrip().lower().startswith(("select", "insert")): # input is query sql, only support SELECT and INSERT type SQL
         return read_query(f"EXPLAIN ANALYZE {query}")
     else:
-        return f"Failed to analyze the query, the reasons maybe: 1.not a standard format uuid query id; 2.only support SELECT and INSERT type SQL."
+        return f"Failed to analyze the query, the reasons maybe: 1.query id not a standard uuid format; 2.only support SELECT and INSERT type SQL."
 
 SR_PROC_DESC = '''
 Internal information exposed by StarRocks similar to linux /proc, following are some common paths:
