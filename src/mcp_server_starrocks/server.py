@@ -302,8 +302,7 @@ def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> s
         if cursor:
             cursor.close()
 
-def analyze_query(uuid: Annotated[str, Field(description="UUID is a string composed of 32 hexadecimal digits, typically formatted as 8-4-4-4-12")], 
-                                            sql: Annotated[str, Field(description="SQL statements are used to operate database, typically beginning with keywords such as SELECT, INSERT, UPDATE, DELETE, etc.")]) -> str:
+def analyze_query(uuid: Annotated[str, Field(description="Query ID, formatted as 8-4-4-4-12")], sql: Annotated[str, Field(description="Query SQL")]) -> str:
     if uuid:
         return read_query(f"ANALYZE PROFILE FROM '{uuid}'")
     elif sql:
