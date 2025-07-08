@@ -302,17 +302,14 @@ def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> s
         if cursor:
             cursor.close()
 
-def analyze_query(query: Annotated[str, Field(description="Analyze query via profile")]) -> str:
-    # check input's query id is standard uuid format or not
-    pattern_uuid = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
-    # check input's query sql is SELECT and INSERT INTO type SQL or not
-    pattern_sql = re.compile(r'^\s*(SELECT|INSERT\s+INTO)', re.IGNORECASE)
-    if pattern_uuid.match(query): # input is query id
-        return read_query(f"ANALYZE PROFILE FROM '{query}'")
-    elif pattern_sql.match(query): # input is query sql
-        return read_query(f"EXPLAIN ANALYZE {query}")
+def analyze_query(uuid: Annotated[str, Field(description="UUID is a string composed of 32 hexadecimal digits, typically formatted as 8-4-4-4-12")], 
+                                            sql: Annotated[str, Field(description="SQL statements are used to operate database, typically beginning with keywords such as SELECT, INSERT, UPDATE, DELETE, etc.")]) -> str:
+    if uuid:
+        return read_query(f"ANALYZE PROFILE FROM '{uuid}'")
+    elif sql:
+        return read_query(f"EXPLAIN ANALYZE {sql}")
     else:
-        return f"Failed to analyze query, the reasons maybe: 1.query id is not standard uuid format; 2.only support SELECT and INSERT INTO type SQL."
+        return f"Failed to analyze query, the reasons maybe: 1.query id is not standard uuid format; 2.the SQL statement have spelling error."
 
 
 SR_PROC_DESC = '''
