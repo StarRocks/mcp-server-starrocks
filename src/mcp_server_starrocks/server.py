@@ -303,14 +303,17 @@ def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> s
             cursor.close()
 
 def analyze_query(query: Annotated[str, Field(description="Analyze query via profile")]) -> str:
-    # check input is standard uuid format or not
-    regex = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
-    if regex.match(query): # input is query id, standard uuid format
+    # check input's query id is standard uuid format or not
+    pattern_uuid = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+    # check input's query sql is SELECT and INSERT INTO type SQL or not
+    pattern_sql = re.compile(r'^\s*(SELECT|INSERT\s+INTO)', re.IGNORECASE)
+    if pattern_uuid.match(query): # input is query id
         return read_query(f"ANALYZE PROFILE FROM '{query}'")
-    elif query.lstrip().lower().startswith(("select", "insert")): # input is query sql, only support SELECT and INSERT type SQL
+    elif pattern_sql.match(query): # input is query sql
         return read_query(f"EXPLAIN ANALYZE {query}")
     else:
-        return f"Failed to analyze the query, the reasons maybe: 1.query id not a standard uuid format; 2.only support SELECT and INSERT type SQL."
+        return f"Failed to analyze query, the reasons maybe: 1.query id is not standard uuid format; 2.only support SELECT and INSERT INTO type SQL."
+
 
 SR_PROC_DESC = '''
 Internal information exposed by StarRocks similar to linux /proc, following are some common paths:
