@@ -28,7 +28,6 @@ import mysql.connector
 import pandas as pd
 import plotly.express as px
 import base64
-import re
 
 mcp = FastMCP('mcp-server-starrocks')
 
