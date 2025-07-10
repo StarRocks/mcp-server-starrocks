@@ -301,6 +301,14 @@ def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> s
         if cursor:
             cursor.close()
 
+def analyze_query(uuid: Annotated[str, Field(description="Query ID, a string composed of 32 hexadecimal digits formatted as 8-4-4-4-12")], sql: Annotated[str, Field(description="Query SQL")]) -> str:
+    if uuid:
+        return read_query(f"ANALYZE PROFILE FROM '{uuid}'")
+    elif sql:
+        return read_query(f"EXPLAIN ANALYZE {sql}")
+    else:
+        return f"Failed to analyze query, the reasons maybe: 1.query id is not standard uuid format; 2.the SQL statement have spelling error."
+
 
 SR_PROC_DESC = '''
 Internal information exposed by StarRocks similar to linux /proc, following are some common paths:
@@ -613,6 +621,8 @@ async def main():
                  description="Get an overview of a specific table: columns, sample rows (up to 5), and total row count. Uses cache unless refresh=true"+db_suffix)
     mcp.add_tool(db_overview,
                  description="Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True"+db_suffix)
+    mcp.add_tool(analyze_query,
+                 description="Analyze query via profile"+db_suffix)
     await mcp.run_async(transport=mcp_transport)
 
 
