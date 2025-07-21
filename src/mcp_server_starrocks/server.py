@@ -28,10 +28,14 @@ import mysql.connector
 import pandas as pd
 import plotly.express as px
 import base64
+import adbc_driver_manager
+import adbc_driver_flightsql.dbapi as flight_sql
+from adbc_driver_manager import Error as adbcError
 
 mcp = FastMCP('mcp-server-starrocks')
 
 global_connection = None
+global_adbc_connection = None
 default_database = os.getenv('STARROCKS_DB')
 # a hint for soft limit, not enforced
 overview_length_limit = int(os.getenv('STARROCKS_OVERVIEW_LIMIT', str(20000)))
@@ -95,6 +99,60 @@ def get_connection():
 
     return global_connection
 
+def get_adbc_connection():
+    global global_adbc_connection
+    if global_adbc_connection is None:
+        try:
+            global_adbc_connection = create_adbc_connection()
+        except adbcError as conn_err:
+            raise conn_err
+
+    # Ensure connection is alive, recreate if not
+    if global_adbc_connection is not None:
+        try:
+            #adbc conn without is_connected()/is_alive(), adbc_get_info() would return error when conn is not alive
+            global_adbc_connection.adbc_get_info()
+        except adbcError as check_err:
+            print(f"Connection check failed: {check_err}, create new adbc connection.")
+            reset_adbc_connection()  # force reset if check failed
+            try:
+                global_adbc_connection = create_adbc_connection() # adbc conn without reconnect(), so recreate here
+            except adbcError as conn_err:
+                raise conn_err
+
+    return global_adbc_connection
+
+def create_adbc_connection():
+    global global_adbc_connection, default_database
+    FE_HOST = os.getenv('STARROCKS_HOST', 'localhost')
+    FE_PORT = os.getenv('STARROCKS_FE_ARROW_FLIGHT_SQL_PORT', '')
+    USER = os.getenv('STARROCKS_USER', 'root')
+    PASSWORD = os.getenv('STARROCKS_PASSWORD', '')
+    try:
+        global_adbc_connection = flight_sql.connect(
+            uri=f"grpc://{FE_HOST}:{FE_PORT}",
+            db_kwargs={
+                adbc_driver_manager.DatabaseOptions.USERNAME.value: USER,
+                adbc_driver_manager.DatabaseOptions.PASSWORD.value: PASSWORD,
+            }
+        )
+        # If STARROCKS_DB is set, try USE DB
+        if default_database:
+            try:
+                cursor = global_adbc_connection.cursor()
+                cursor.execute(f"USE {default_database}")
+                cursor.close()
+            except adbcError as db_err:
+                # Warn but don't fail connection if USE DB fails
+                print(f"Warning: Could not switch to default database '{default_database}': {db_err}")
+    except adbcError:
+        print(f"Error creating adbc connection: {adbcError}")
+        # Reset global adbc connection on failure
+        global_adbc_connection = None
+        # Re-raise the exception to be caught by callers
+        raise adbcError
+
+    return global_adbc_connection
 
 def reset_connection():
     global global_connection
@@ -106,6 +164,15 @@ def reset_connection():
         finally:
             global_connection = None
 
+def reset_adbc_connection():
+    global global_adbc_connection
+    if global_adbc_connection is not None:
+        try:
+            global_adbc_connection.close()
+        except Exception as e:
+            print(f"Error closing connection: {e}")  # Log error but proceed
+        finally:
+            global_adbc_connection = None
 
 def _format_rows_to_string(columns, rows, limit=None):
     """Helper to format rows similar to handle_read_query but without row count."""
@@ -273,6 +340,25 @@ def read_query(query: Annotated[str, Field(description="SQL query to execute")])
         if cursor:
             cursor.close()
 
+def read_adbc_query(query: Annotated[str, Field(description="SQL query to execute")]) -> str:
+    try:
+        conn = get_adbc_connection()
+        cursor = conn.cursor()
+        cursor.execute(query)
+        result = cursor.fetchallarrow()
+        df = result.to_pandas()
+        if not df.empty:
+            return df.to_string(index=False)
+        else:
+            return "Query executed successfully, but no result set was returned."
+    except adbcError as e:  # Catch specific DB errors
+        reset_adbc_connection()  # Reset connection on DB error
+        return f"Error executing query '{query}': {str(e)}"
+    except Exception as e:  # Catch other potential errors
+        return f"Unexpected error executing query '{query}': {str(e)}"
+    finally:
+        if cursor:
+            cursor.close()
 
 def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> str:
     try:
@@ -623,6 +709,8 @@ async def main():
                  description="Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True"+db_suffix)
     mcp.add_tool(analyze_query,
                  description="Analyze query via profile"+db_suffix)
+    mcp.add_tool(read_adbc_query,
+                 description="Execute a SELECT query or commands that return a ResultSet with Arrow Flight SQL protocol"+db_suffix)
     await mcp.run_async(transport=mcp_transport)
 
 
