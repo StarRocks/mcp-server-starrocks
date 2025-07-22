@@ -709,8 +709,9 @@ async def main():
                  description="Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True"+db_suffix)
     mcp.add_tool(analyze_query,
                  description="Analyze query via profile"+db_suffix)
-    mcp.add_tool(read_adbc_query,
-                 description="Execute a SELECT query or commands that return a ResultSet with Arrow Flight SQL protocol"+db_suffix)
+    if os.getenv('STARROCKS_FE_ARROW_FLIGHT_SQL_PORT'):
+        mcp.add_tool(read_adbc_query,
+                description="Execute a SELECT query or commands that return a ResultSet with Arrow Flight SQL protocol"+db_suffix)
     await mcp.run_async(transport=mcp_transport)
 
 
