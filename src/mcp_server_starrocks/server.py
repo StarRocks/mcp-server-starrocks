@@ -28,9 +28,13 @@ import mysql.connector
 import pandas as pd
 import plotly.express as px
 import base64
+import adbc_driver_manager
+import adbc_driver_flightsql.dbapi as flight_sql
+from adbc_driver_manager import Error as adbcError
 
 mcp = FastMCP('mcp-server-starrocks')
 
+enable_arrow_flight_sql = True if os.getenv('STARROCKS_FE_ARROW_FLIGHT_SQL_PORT') else False
 global_connection = None
 default_database = os.getenv('STARROCKS_DB')
 # a hint for soft limit, not enforced
@@ -40,8 +44,16 @@ global_table_overview_cache = {}
 
 mcp_transport = os.getenv('MCP_TRANSPORT_MODE', 'stdio')
 
-
 def get_connection():
+    global global_connection
+    if enable_arrow_flight_sql:
+        global_connection = get_adbc_connection()
+    else:
+        global_connection = get_normal_connection()
+
+    return global_connection
+
+def get_normal_connection():
     global global_connection, default_database
     if global_connection is None:
         connection_params = {
@@ -95,6 +107,60 @@ def get_connection():
 
     return global_connection
 
+def get_adbc_connection():
+    global global_connection
+    if global_connection is None:
+        try:
+            global_connection = create_adbc_connection()
+        except adbcError as conn_err:
+            raise conn_err
+
+    # Ensure connection is alive, recreate if not
+    if global_connection is not None:
+        try:
+            #adbc conn without is_connected()/is_alive(), adbc_get_info() would return error when conn is not alive
+            global_connection.adbc_get_info()
+        except adbcError as check_err:
+            print(f"Connection check failed: {check_err}, create new adbc connection.")
+            reset_adbc_connection()  # force reset if check failed
+            try:
+                global_connection = create_adbc_connection() # adbc conn without reconnect(), so recreate here
+            except adbcError as conn_err:
+                raise conn_err
+
+    return global_connection
+
+def create_adbc_connection():
+    global global_connection, default_database
+    FE_HOST = os.getenv('STARROCKS_HOST', 'localhost')
+    FE_PORT = os.getenv('STARROCKS_FE_ARROW_FLIGHT_SQL_PORT', '')
+    USER = os.getenv('STARROCKS_USER', 'root')
+    PASSWORD = os.getenv('STARROCKS_PASSWORD', '')
+    try:
+        global_connection = flight_sql.connect(
+            uri=f"grpc://{FE_HOST}:{FE_PORT}",
+            db_kwargs={
+                adbc_driver_manager.DatabaseOptions.USERNAME.value: USER,
+                adbc_driver_manager.DatabaseOptions.PASSWORD.value: PASSWORD,
+            }
+        )
+        # If STARROCKS_DB is set, try USE DB
+        if default_database:
+            try:
+                cursor = global_connection.cursor()
+                cursor.execute(f"USE {default_database}")
+                cursor.close()
+            except adbcError as db_err:
+                # Warn but don't fail connection if USE DB fails
+                print(f"Warning: Could not switch to default database '{default_database}': {db_err}")
+    except adbcError:
+        print(f"Error creating adbc connection: {adbcError}")
+        # Reset global adbc connection on failure
+        global_connection = None
+        # Re-raise the exception to be caught by callers
+        raise adbcError
+
+    return global_connection
 
 def reset_connection():
     global global_connection
@@ -105,7 +171,6 @@ def reset_connection():
             print(f"Error closing connection: {e}")  # Log error but proceed
         finally:
             global_connection = None
-
 
 def _format_rows_to_string(columns, rows, limit=None):
     """Helper to format rows similar to handle_read_query but without row count."""
@@ -149,13 +214,13 @@ def _get_table_details(conn, db_name, table_name, limit=None):
             query = f"SELECT COUNT(*) FROM {full_table_name}"
             # print(f"Executing: {query}") # Debug
             cursor.execute(query)
-            count_result = cursor.fetchone()
+            count_result = tuple(cursor.fetchallarrow().to_pandas()['']) if enable_arrow_flight_sql else cursor.fetchone()
             if count_result:
                 count = count_result[0]
                 output_lines.append(f"\nTotal rows: {count}")
             else:
                 output_lines.append(f"\nCould not determine total row count.")
-        except MySQLError as e:
+        except (MySQLError,adbcError) as e:
             output_lines.append(f"Error getting row count for {full_table_name}: {e}")
 
         # 2. Get Columns (DESCRIBE)
@@ -165,13 +230,13 @@ def _get_table_details(conn, db_name, table_name, limit=None):
                 # print(f"Executing: {query}") # Debug
                 cursor.execute(query)
                 cols = [desc[0] for desc in cursor.description] if cursor.description else []
-                rows = cursor.fetchall()
+                rows = cursor.fetchallarrow().to_pandas().values.tolist() if enable_arrow_flight_sql else cursor.fetchall()
                 output_lines.append(f"\nColumns:")
                 if rows:
                     output_lines.append(_format_rows_to_string(cols, rows, limit=limit))
                 else:
                     output_lines.append("(Could not retrieve column information or table has no columns).")
-            except MySQLError as e:
+            except (MySQLError, adbcError) as e:
                 output_lines.append(f"Error getting columns for {full_table_name}: {e}")
                 # If DESCRIBE fails, likely the table doesn't exist or no access,
                 # return early as other queries will also fail.
@@ -183,16 +248,16 @@ def _get_table_details(conn, db_name, table_name, limit=None):
                 # print(f"Executing: {query}") # Debug
                 cursor.execute(query)
                 cols = [desc[0] for desc in cursor.description] if cursor.description else []
-                rows = cursor.fetchall()
+                rows = cursor.fetchallarrow().to_pandas().values.tolist() if enable_arrow_flight_sql else cursor.fetchall()
                 output_lines.append(f"\nSample rows (limit 3):")
                 if rows:
                     output_lines.append(_format_rows_to_string(cols, rows, limit=limit))
                 else:
                     output_lines.append(f"(No rows found in {full_table_name}).")
-            except MySQLError as e:
+            except (MySQLError, adbcError) as e:
                 output_lines.append(f"Error getting sample rows for {full_table_name}: {e}")
 
-    except MySQLError as outer_e:
+    except (MySQLError, adbcError) as outer_e:
         # Catch errors potentially related to cursor creation or initial connection state
         output_lines.append(f"Database error during overview for {full_table_name}: {outer_e}")
         reset_connection()  # Reset connection on error
@@ -218,13 +283,13 @@ def handle_single_column_query(query):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(query)
-        rows = cursor.fetchall()
+        rows = cursor.fetchonearrow().to_pandas().values.tolist() if enable_arrow_flight_sql else cursor.fetchall()
         if rows:
             # Assuming the desired column is the first one
             return "\n".join([str(row[0]) for row in rows])
         else:
             return "None"
-    except MySQLError as e:  # Catch specific DB errors
+    except (MySQLError, adbcError) as e:  # Catch specific DB errors
         reset_connection()  # Reset connection on DB error
         return f"Error executing query '{query}': {str(e)}"
     except Exception as e:  # Catch other potential errors
@@ -241,22 +306,27 @@ def read_query(query: Annotated[str, Field(description="SQL query to execute")])
         cursor = conn.cursor()
         cursor.execute(query)
         if cursor.description:  # Check if there's a result set description
-            columns = [desc[0] for desc in cursor.description]  # Get column names
-            rows = cursor.fetchall()
+            if enable_arrow_flight_sql:
+                result = cursor.fetchallarrow()
+                df = result.to_pandas()
+                return df.to_string(index=False)
+            else:
+                columns = [desc[0] for desc in cursor.description]  # Get column names
+                rows = cursor.fetchall()
 
-            output = io.StringIO()
+                output = io.StringIO()
 
-            # Convert rows to CSV-like format
-            def to_csv_line(row):
-                return ",".join(
-                    str(item).replace("\"", "\"\"") if isinstance(item, str) else str(item) for item in row)
+                # Convert rows to CSV-like format
+                def to_csv_line(row):
+                    return ",".join(
+                        str(item).replace("\"", "\"\"") if isinstance(item, str) else str(item) for item in row)
 
-            output.write(to_csv_line(columns) + "\n")  # Write column names
-            for row in rows:
-                output.write(to_csv_line(row) + "\n")  # Write data rows
+                output.write(to_csv_line(columns) + "\n")  # Write column names
+                for row in rows:
+                    output.write(to_csv_line(row) + "\n")  # Write data rows
 
-            output.write(f"\n{len(rows)} rows in set\n")
-            return output.getvalue()
+                output.write(f"\n{len(rows)} rows in set\n")
+                return output.getvalue()
         else:
             # Handle commands that don't return rows but might have messages (e.g., USE DB)
             # Or potentially commands that succeeded but produced no results (e.g., SELECT on empty table)
@@ -264,7 +334,7 @@ def read_query(query: Annotated[str, Field(description="SQL query to execute")])
             # More sophisticated handling could check cursor.warning_count etc.
             return "Query executed successfully, but no result set was returned."
 
-    except MySQLError as e:  # Catch specific DB errors
+    except (MySQLError, adbcError) as e:  # Catch specific DB errors
         reset_connection()  # Reset connection on DB error
         return f"Error executing query '{query}': {str(e)}"
     except Exception as e:  # Catch other potential errors
@@ -272,7 +342,6 @@ def read_query(query: Annotated[str, Field(description="SQL query to execute")])
     finally:
         if cursor:
             cursor.close()
-
 
 def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> str:
     try:
@@ -288,7 +357,7 @@ def write_query(query: Annotated[str, Field(description="SQL to execute")]) -> s
             return f"Query OK, {affected_rows} rows affected ({elapsed_time:.2f} sec)"
         else:
             return f"Query OK ({elapsed_time:.2f} sec)"  # For DDL or commands where rowcount is not applicable
-    except MySQLError as e:  # Catch specific DB errors
+    except (MySQLError, adbcError) as e:  # Catch specific DB errors
         reset_connection()  # Reset connection on DB error
         try:
             conn.rollback()  # Rollback on error
@@ -449,7 +518,7 @@ def query_and_plotly_chart(query: Annotated[str, Field(description="SQL query to
         if cursor.description is None:
             return f'Query "{query}" did not return data suitable for plotting.'
         column_names = [desc[0] for desc in cursor.description] if cursor.description else []
-        rows = cursor.fetchall()
+        rows = cursor.fetchallarrow().to_pandas().values.tolist() if enable_arrow_flight_sql else cursor.fetchall()
         df = pd.DataFrame(rows, columns=column_names)
         if df.empty:
             return 'Query returned no data to plot.'
@@ -478,7 +547,7 @@ def query_and_plotly_chart(query: Annotated[str, Field(description="SQL query to
             f'dataframe data:\n{df}\nChart generated but for UI only',
             Image(data=img_base64_string, format="jpg")
         ]
-    except (MySQLError, pd.errors.EmptyDataError) as db_pd_err:
+    except (MySQLError, adbcError, pd.errors.EmptyDataError) as db_pd_err:
         # Handle DB or Pandas specific errors gracefully
         return [f'Error during data fetching or processing: {db_pd_err}']
     except Exception as eval_err:
@@ -527,7 +596,7 @@ async def table_overview(
         # print(f"Cache miss or refresh for table overview: {cache_key}") # Debug
         overview_text = _get_table_details(conn, db_name, table_name, limit=overview_length_limit)
         return overview_text
-    except MySQLError as e:  # Catch DB errors at tool call level
+    except (MySQLError, adbcError) as e:  # Catch DB errors at tool call level
         reset_connection()
         return f"Database Error executing tool 'table_overview': {type(e).__name__}: {e}"
     except Exception as e:
@@ -556,8 +625,9 @@ async def db_overview(
             query = f"SHOW TABLES FROM `{db_name}`"  # Use backticks
             # print(f"Executing: {query}") # Debug
             cursor.execute(query)
-            tables = [row[0] for row in cursor.fetchall()]
-        except MySQLError as e:
+            rows = cursor.fetchallarrow().to_pandas().values.tolist() if enable_arrow_flight_sql else cursor.fetchall()
+            tables = [row[0] for row in rows]
+        except (MySQLError, adbcError) as e:
             print(f"Error listing tables in '{db_name}': {e}")
             reset_connection()
             return f"Database Error listing tables in '{db_name}': {e}"
@@ -598,7 +668,7 @@ async def db_overview(
 
         return "\n".join(all_overviews)
 
-    except MySQLError as e:  # Catch DB errors at tool call level
+    except (MySQLError, adbcError) as e:  # Catch DB errors at tool call level
         reset_connection()
         return f"Database Error executing tool 'db_overview': {type(e).__name__}: {e}"
     except Exception as e:

@@ -12,6 +12,9 @@ dependencies = [
     "mysql-connector-python>=9.2.0",
     "pandas>=2.2.3",
     "plotly>=6.0.1",
+    "adbc-driver-manager>=0.8.0",
+    "adbc-driver-flightsql>=0.8.0",
+    "pyarrow>=14.0.0",
 ]
 
 [[project.authors]]
