@@ -122,7 +122,7 @@ def get_adbc_connection():
             global_connection.adbc_get_info()
         except adbcError as check_err:
             print(f"Connection check failed: {check_err}, create new adbc connection.")
-            reset_adbc_connection()  # force reset if check failed
+            reset_connection()  # force reset if check failed
             try:
                 global_connection = create_adbc_connection() # adbc conn without reconnect(), so recreate here
             except adbcError as conn_err:
