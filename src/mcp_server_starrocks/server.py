@@ -540,12 +540,12 @@ def query_and_plotly_chart(query: Annotated[str, Field(description="SQL query to
         # with open("chart.jpg", "wb") as f:
         #     f.write(img_bytes)
         # base64 encode the image bytes
-        img_base64_bytes = base64.b64encode(img_bytes)
+        # img_base64_bytes = base64.b64encode(img_bytes)
         # Decode bytes to utf-8 string for easier handling (e.g., JSON serialization)
-        img_base64_string = img_base64_bytes.decode('utf-8')
+        # img_base64_string = img_base64_bytes.decode('utf-8')
         return [
             f'dataframe data:\n{df}\nChart generated but for UI only',
-            Image(data=img_base64_string, format="jpg")
+            Image(data=img_bytes, format="jpg")
         ]
     except (MySQLError, adbcError, pd.errors.EmptyDataError) as db_pd_err:
         # Handle DB or Pandas specific errors gracefully
