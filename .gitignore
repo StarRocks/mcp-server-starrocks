@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+uv.lock
+
+# IDE files
+.idea/
+.vscode/
+
+# Exclude Mac generated files
+.DS_Store
