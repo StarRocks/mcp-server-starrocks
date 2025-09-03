@@ -22,6 +22,40 @@ The StarRocks MCP Server acts as a bridge between AI assistants and StarRocks da
 
 The MCP server is typically run via an MCP host. Configuration is passed to the host, specifying how to launch the StarRocks MCP server process.
 
+**Using Streamable HTTP (recommended):**
+
+To start the server in Streamable HTTP mode:
+
+```bash
+export STARROCKS_HOST=localhost
+export STARROCKS_PORT=9030
+export STARROCKS_USER=root
+```
+
+First test connect is ok:
+```
+$ uv run mcp-server-starrocks --test
+```
+
+Start the server:
+
+```
+uv run mcp-server-starrocks --mode streamable-http --port 8000
+```
+
+Then config the MCP like this:
+
+```json
+{
+  "mcpServers": {
+    "mcp-server-starrocks": {
+      "url": "http://localhost:8000/mcp"
+    }
+  }
+}
+```
+
+
 **Using `uv` with installed package:**
 
 ```json
@@ -71,23 +105,30 @@ The MCP server is typically run via an MCP host. Configuration is passed to the 
 }
 ```
 
-**Using Streamable HTTP (recommended for integration):**
+**Command-line Arguments:**
 
-```json
-{
-  "mcpServers": {
-    "mcp-server-starrocks": {
-      "url": "http://localhost:8000/mcp"
-    }
-  }
-}
-```
-
-To start the server in Streamable HTTP mode:
+The server supports the following command-line arguments:
 
 ```bash
-export MCP_TRANSPORT_MODE=streamable-http
-uv run mcp-server-starrocks
+uv run mcp-server-starrocks --help
+```
+
+- `--mode {stdio,sse,http,streamable-http}`: Transport mode (default: stdio or MCP_TRANSPORT_MODE env var)
+- `--host HOST`: Server host for HTTP modes (default: localhost)
+- `--port PORT`: Server port for HTTP modes
+- `--test`: Run in test mode to verify functionality
+
+Examples:
+
+```bash
+# Start in streamable HTTP mode on custom host/port
+uv run mcp-server-starrocks --mode streamable-http --host 0.0.0.0 --port 8080
+
+# Start in stdio mode (default)
+uv run mcp-server-starrocks --mode stdio
+
+# Run test mode
+uv run mcp-server-starrocks --test
 ```
 
 - The `url` field should point to the Streamable HTTP endpoint of your MCP server (adjust host/port as needed).
@@ -118,14 +159,39 @@ uv run mcp-server-starrocks
 - `read_query`
 
   - **Description:** Execute a SELECT query or other commands that return a ResultSet (e.g., `SHOW`, `DESCRIBE`).
-  - **Input:** `{ "query": "SQL query string" }`
+  - **Input:** 
+    ```json
+    {
+      "query": "SQL query string",
+      "db": "database name (optional, uses default database if not specified)"
+    }
+    ```
   - **Output:** Text content containing the query results in a CSV-like format, including a header row and a row count summary. Returns an error message on failure.
 
 - `write_query`
 
   - **Description:** Execute a DDL (`CREATE`, `ALTER`, `DROP`), DML (`INSERT`, `UPDATE`, `DELETE`), or other StarRocks command that does not return a ResultSet.
-  - **Input:** `{ "query": "SQL command string" }`
+  - **Input:** 
+    ```json
+    {
+      "query": "SQL command string",
+      "db": "database name (optional, uses default database if not specified)"
+    }
+    ```
   - **Output:** Text content confirming success (e.g., "Query OK, X rows affected") or reporting an error. Changes are committed automatically on success.
+
+- `analyze_query`
+
+  - **Description:** Analyze a query and get analyze result using query profile or explain analyze.
+  - **Input:**
+    ```json
+    {
+      "uuid": "Query ID, a string composed of 32 hexadecimal digits formatted as 8-4-4-4-12",
+      "sql": "Query SQL to analyze",
+      "db": "database name (optional, uses default database if not specified)"
+    }
+    ```
+  - **Output:** Text content containing the query analysis results. Uses `ANALYZE PROFILE FROM` if uuid is provided, otherwise uses `EXPLAIN ANALYZE` if sql is provided.
 
 - `query_and_plotly_chart`
 
@@ -134,7 +200,8 @@ uv run mcp-server-starrocks
     ```json
     {
       "query": "SQL query to fetch data",
-      "plotly_expr": "Python expression string using 'px' (Plotly Express) and 'df' (DataFrame). Example: 'px.scatter(df, x=\"col1\", y=\"col2\")'"
+      "plotly_expr": "Python expression string using 'px' (Plotly Express) and 'df' (DataFrame). Example: 'px.scatter(df, x=\"col1\", y=\"col2\")'",
+      "db": "database name (optional, uses default database if not specified)"
     }
     ```
   - **Output:** A list containing:
@@ -223,6 +290,13 @@ None defined by this server.
 - When `db_overview` is called, it lists all tables in the database and then attempts to retrieve the overview for _each table_ using the same caching logic as `table_overview` (checking cache first, fetching if needed and `refresh` is `false` or cache miss). If `refresh` is `true` for `db_overview`, it forces a refresh for _all_ tables in that database.
 - The `STARROCKS_OVERVIEW_LIMIT` environment variable provides a _soft target_ for the maximum length of the overview string generated _per table_ when populating the cache, helping to manage memory usage.
 - Cached results, including any error messages encountered during the original fetch, are stored and returned on subsequent cache hits.
+
+## Debug
+
+After starting mcp server, you can use inspector to debug:
+```
+npx @modelcontextprotocol/inspector
+```
 
 ## Demo
 
