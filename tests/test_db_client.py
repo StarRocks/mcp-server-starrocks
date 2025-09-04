@@ -24,7 +24,8 @@ from src.mcp_server_starrocks.db_client import (
     DBClient, 
     ResultSet, 
     get_db_client, 
-    reset_db_connections
+    reset_db_connections,
+    parse_connection_url
 )
 
 
@@ -607,6 +608,384 @@ class TestResultSet:
         assert result.column_names is None
         assert result.rows is None
         assert result.error_message is None
+
+
+class TestParseConnectionUrl:
+    """Test cases for parse_connection_url function."""
+    
+    def test_parse_basic_url(self):
+        """Test parsing basic connection URL without schema."""
+        url = "root:password123@localhost:9030/test_db"
+        result = parse_connection_url(url)
+        
+        expected = {
+            'schema': None,
+            'user': 'root',
+            'password': 'password123',
+            'host': 'localhost',
+            'port': '9030',
+            'database': 'test_db'
+        }
+        assert result == expected
+    
+    def test_parse_url_with_schema(self):
+        """Test parsing connection URL with schema."""
+        url = "mysql://admin:secret@db.example.com:3306/production"
+        result = parse_connection_url(url)
+        
+        expected = {
+            'schema': 'mysql',
+            'user': 'admin',
+            'password': 'secret',
+            'host': 'db.example.com',
+            'port': '3306',
+            'database': 'production'
+        }
+        assert result == expected
+    
+    def test_parse_url_with_different_schemas(self):
+        """Test parsing URLs with various schema types."""
+        test_cases = [
+            ("starrocks://user:pass@host:9030/db", "starrocks"),
+            ("jdbc+mysql://user:pass@host:3306/db", "jdbc+mysql"),
+            ("postgresql://user:pass@host:5432/db", "postgresql"),
+        ]
+        
+        for url, expected_schema in test_cases:
+            result = parse_connection_url(url)
+            assert result['schema'] == expected_schema
+            assert result['user'] == 'user'
+            assert result['password'] == 'pass'
+            assert result['host'] == 'host'
+            assert result['database'] == 'db'
+    
+    def test_parse_url_empty_password_fails(self):
+        """Test that URL with empty password fails (current regex limitation)."""
+        url = "root:@localhost:9030/test_db"
+        with pytest.raises(ValueError, match="Invalid connection URL"):
+            parse_connection_url(url)
+    
+    def test_parse_url_complex_password_limitation(self):
+        """Test that password with @ symbol has regex limitation (parses incorrectly)."""
+        url = "user:p@ssw0rd!@server:9030/mydb"
+        result = parse_connection_url(url)
+        
+        # Due to regex limitation, @ in password causes incorrect parsing
+        assert result['user'] == 'user'
+        assert result['password'] == 'p'  # Only gets characters before first @
+        assert result['host'] == 'ssw0rd!@server'  # Rest becomes host
+        assert result['port'] == '9030'
+        assert result['database'] == 'mydb'
+    
+    def test_parse_url_password_without_at_symbol(self):
+        """Test parsing URL with complex password without @ symbol."""
+        url = "user:p#ssw0rd!$%^&*()@server:9030/mydb"
+        result = parse_connection_url(url)
+        
+        assert result['user'] == 'user'
+        assert result['password'] == 'p#ssw0rd!$%^&*()'
+        assert result['host'] == 'server'
+        assert result['port'] == '9030'
+        assert result['database'] == 'mydb'
+    
+    def test_parse_url_complex_username_with_at_symbol(self):
+        """Test that username with @ symbol actually works."""
+        url = "user.name+tag@domain:password123@host:9030/db"
+        result = parse_connection_url(url)
+        
+        assert result['user'] == 'user.name+tag@domain'
+        assert result['password'] == 'password123'
+        assert result['host'] == 'host'
+        assert result['port'] == '9030'
+        assert result['database'] == 'db'
+    
+    def test_parse_url_complex_username_without_at(self):
+        """Test parsing URL with complex username without @ symbol."""
+        url = "user.name+tag_domain:password123@host:9030/db"
+        result = parse_connection_url(url)
+        
+        assert result['user'] == 'user.name+tag_domain'
+        assert result['password'] == 'password123'
+        assert result['host'] == 'host'
+        assert result['port'] == '9030'
+        assert result['database'] == 'db'
+    
+    def test_parse_url_numeric_database(self):
+        """Test parsing URL with numeric database name."""
+        url = "root:pass@localhost:9030/db123"
+        result = parse_connection_url(url)
+        
+        assert result['database'] == 'db123'
+    
+    def test_parse_url_database_with_hyphens(self):
+        """Test parsing URL with database name containing hyphens."""
+        url = "root:pass@localhost:9030/test-db-name"
+        result = parse_connection_url(url)
+        
+        assert result['database'] == 'test-db-name'
+    
+    def test_parse_url_ip_address_host(self):
+        """Test parsing URL with IP address as host."""
+        url = "root:pass@192.168.1.100:9030/testdb"
+        result = parse_connection_url(url)
+        
+        assert result['host'] == '192.168.1.100'
+        assert result['port'] == '9030'
+        assert result['database'] == 'testdb'
+    
+    def test_parse_url_different_ports(self):
+        """Test parsing URLs with different port numbers."""
+        test_cases = [
+            ("user:pass@host:3306/db", "3306"),
+            ("user:pass@host:5432/db", "5432"),
+            ("user:pass@host:27017/db", "27017"),
+            ("user:pass@host:1/db", "1"),
+            ("user:pass@host:65535/db", "65535"),
+        ]
+        
+        for url, expected_port in test_cases:
+            result = parse_connection_url(url)
+            assert result['port'] == expected_port
+    
+    def test_parse_invalid_urls(self):
+        """Test that invalid URLs raise ValueError."""
+        invalid_urls = [
+            # Missing parts
+            "user@host:9030/db",  # Missing password separator
+            "user:pass@host/db",  # Missing port
+            "@host:9030/db",  # Missing user
+            "user:pass@:9030/db",  # Missing host
+            
+            # Malformed URLs
+            "user:pass@host:port/db",  # Non-numeric port
+            "user:pass@host:9030/",  # Empty database
+            "user:pass@host:9030/db/extra",  # Extra path component
+            "",  # Empty string
+            "random-string-not-url",  # Not a URL format
+            
+            # Special cases
+            "://user:pass@host:9030/db",  # Empty schema
+            "user:pass@host:-1/db",  # Negative port
+            "root:@localhost:9030/test_db",  # Empty password
+        ]
+        
+        for invalid_url in invalid_urls:
+            with pytest.raises(ValueError, match="Invalid connection URL"):
+                parse_connection_url(invalid_url)
+    
+    def test_parse_url_colon_in_password_works(self):
+        """Test that colon in password actually works (unlike @ symbol)."""
+        url = "user:pass:extra@host:9030/db"
+        result = parse_connection_url(url)
+        
+        assert result['user'] == 'user'
+        assert result['password'] == 'pass:extra'  # Colons in password are fine
+        assert result['host'] == 'host'
+        assert result['port'] == '9030'
+        assert result['database'] == 'db'
+    
+    def test_parse_url_without_database(self):
+        """Test parsing URL without database (database is optional)."""
+        url = "user:password@host:9030"
+        result = parse_connection_url(url)
+        
+        assert result['schema'] == None
+        assert result['user'] == 'user'
+        assert result['password'] == 'password'
+        assert result['host'] == 'host'
+        assert result['port'] == '9030'
+        assert result['database'] == None  # Database should be None when omitted
+    
+    def test_parse_url_with_schema_without_database(self):
+        """Test parsing URL with schema but without database."""
+        url = "mysql://admin:secret@db.example.com:3306"
+        result = parse_connection_url(url)
+        
+        assert result['schema'] == 'mysql'
+        assert result['user'] == 'admin'
+        assert result['password'] == 'secret'
+        assert result['host'] == 'db.example.com'
+        assert result['port'] == '3306'
+        assert result['database'] == None
+    
+    def test_parse_url_various_schemas_without_database(self):
+        """Test parsing URLs with various schemas but no database."""
+        test_cases = [
+            ("starrocks://user:pass@host:9030", "starrocks"),
+            ("jdbc+mysql://user:pass@host:3306", "jdbc+mysql"),
+            ("postgresql://user:pass@host:5432", "postgresql"),
+        ]
+        
+        for url, expected_schema in test_cases:
+            result = parse_connection_url(url)
+            assert result['schema'] == expected_schema
+            assert result['user'] == 'user'
+            assert result['password'] == 'pass'
+            assert result['host'] == 'host'
+            assert result['database'] == None
+    
+    def test_parse_url_edge_cases(self):
+        """Test edge cases that should work."""
+        # Single character components
+        url = "a:b@c:1/d"
+        result = parse_connection_url(url)
+        assert result['user'] == 'a'
+        assert result['password'] == 'b'
+        assert result['host'] == 'c'
+        assert result['port'] == '1'
+        assert result['database'] == 'd'
+        
+        # Long components
+        long_user = "a" * 100
+        long_pass = "b" * 100
+        long_host = "c" * 50
+        long_db = "d" * 50
+        url = f"{long_user}:{long_pass}@{long_host}:9030/{long_db}"
+        result = parse_connection_url(url)
+        assert result['user'] == long_user
+        assert result['password'] == long_pass
+        assert result['host'] == long_host
+        assert result['database'] == long_db
+    
+    def test_parse_url_returns_dict_with_all_keys(self):
+        """Test that parse_connection_url always returns dict with all expected keys."""
+        test_cases = [
+            "root:pass@localhost:9030/db",
+            "mysql://root:pass@localhost:3306/db",
+        ]
+        
+        expected_keys = {'schema', 'user', 'password', 'host', 'port', 'database'}
+        
+        for url in test_cases:
+            result = parse_connection_url(url)
+            assert isinstance(result, dict)
+            assert set(result.keys()) == expected_keys
+    
+    def test_parse_url_regex_pattern_comprehensive(self):
+        """Test comprehensive regex pattern matching."""
+        # Test that the regex correctly captures each group
+        url = "custom+schema://test_user:complex!pass@sub.domain.com:12345/my_db-name"
+        result = parse_connection_url(url)
+        
+        assert result['schema'] == 'custom+schema'
+        assert result['user'] == 'test_user'
+        assert result['password'] == 'complex!pass'
+        assert result['host'] == 'sub.domain.com'
+        assert result['port'] == '12345'
+        assert result['database'] == 'my_db-name'
+
+
+class TestDummyMode:
+    """Test cases for STARROCKS_DUMMY_TEST environment variable."""
+    
+    def test_dummy_mode_enabled(self):
+        """Test that dummy mode returns expected dummy data."""
+        # Set dummy test environment variable
+        with patch.dict(os.environ, {'STARROCKS_DUMMY_TEST': '1'}):
+            client = DBClient()
+            assert client.enable_dummy_test is True
+            
+            # Test basic query
+            result = client.execute("SELECT * FROM any_table")
+            
+            assert result.success is True
+            assert result.column_names == ['name']
+            assert result.rows == [['aaa'], ['bbb'], ['ccc']]
+            assert result.execution_time is not None
+            assert result.execution_time > 0
+            assert result.pandas is None  # pandas should be None for raw format
+    
+    def test_dummy_mode_with_pandas_format(self):
+        """Test dummy mode with pandas return format."""
+        with patch.dict(os.environ, {'STARROCKS_DUMMY_TEST': '1'}):
+            client = DBClient()
+            
+            result = client.execute("SELECT * FROM any_table", return_format="pandas")
+            
+            assert result.success is True
+            assert result.column_names == ['name']
+            assert result.rows == [['aaa'], ['bbb'], ['ccc']]
+            assert result.pandas is not None
+            assert isinstance(result.pandas, pd.DataFrame)
+            assert len(result.pandas) == 3
+            assert list(result.pandas.columns) == ['name']
+            assert result.pandas.iloc[0]['name'] == 'aaa'
+            assert result.pandas.iloc[1]['name'] == 'bbb'
+            assert result.pandas.iloc[2]['name'] == 'ccc'
+    
+    def test_dummy_mode_ignores_statement_and_db(self):
+        """Test that dummy mode returns same data regardless of SQL statement or database."""
+        with patch.dict(os.environ, {'STARROCKS_DUMMY_TEST': '1'}):
+            client = DBClient()
+            
+            # Test different statements
+            result1 = client.execute("SHOW DATABASES")
+            result2 = client.execute("CREATE TABLE test (id INT)")
+            result3 = client.execute("SELECT COUNT(*) FROM users", db="production")
+            
+            # All should return the same dummy data
+            for result in [result1, result2, result3]:
+                assert result.success is True
+                assert result.column_names == ['name']
+                assert result.rows == [['aaa'], ['bbb'], ['ccc']]
+    
+    def test_dummy_mode_disabled_by_default(self):
+        """Test that dummy mode is disabled when environment variable is not set."""
+        # Ensure STARROCKS_DUMMY_TEST is not set
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop('STARROCKS_DUMMY_TEST', None)  # Remove if exists
+            client = DBClient()
+            assert client.enable_dummy_test is False
+    
+    def test_dummy_mode_with_empty_string(self):
+        """Test that empty string for STARROCKS_DUMMY_TEST disables dummy mode."""
+        with patch.dict(os.environ, {'STARROCKS_DUMMY_TEST': ''}):
+            client = DBClient()
+            assert client.enable_dummy_test is False
+    
+    def test_dummy_mode_with_various_truthy_values(self):
+        """Test that various truthy values enable dummy mode."""
+        truthy_values = ['1', 'true', 'True', 'yes', 'on', 'any_non_empty_string']
+        
+        for value in truthy_values:
+            with patch.dict(os.environ, {'STARROCKS_DUMMY_TEST': value}):
+                client = DBClient()
+                assert client.enable_dummy_test is True, f"Failed for value: {value}"
+    
+    def test_dummy_mode_to_pandas_conversion(self):
+        """Test to_pandas() method works with dummy data."""
+        with patch.dict(os.environ, {'STARROCKS_DUMMY_TEST': '1'}):
+            client = DBClient()
+            
+            # Test raw format conversion
+            result = client.execute("SELECT * FROM test")
+            df = result.to_pandas()
+            assert isinstance(df, pd.DataFrame)
+            assert len(df) == 3
+            assert list(df.columns) == ['name']
+            assert df.iloc[0]['name'] == 'aaa'
+            
+            # Test pandas format (should return same DataFrame)
+            result_pandas = client.execute("SELECT * FROM test", return_format="pandas")
+            df_pandas = result_pandas.to_pandas()
+            assert df_pandas is result_pandas.pandas
+    
+    def test_dummy_mode_to_string_conversion(self):
+        """Test to_string() method works with dummy data."""
+        with patch.dict(os.environ, {'STARROCKS_DUMMY_TEST': '1'}):
+            client = DBClient()
+            
+            result = client.execute("SELECT * FROM test")
+            string_output = result.to_string()
+            
+            expected_lines = [
+                'name',
+                'aaa',
+                'bbb', 
+                'ccc',
+                ''
+            ]
+            assert string_output == '\n'.join(expected_lines)
 
 
 if __name__ == "__main__":

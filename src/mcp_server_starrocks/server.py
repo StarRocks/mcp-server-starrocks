@@ -20,13 +20,14 @@ import os
 import traceback
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
+from fastmcp.tools.tool import ToolResult
+from mcp.types import TextContent, ImageContent
 from fastmcp.exceptions import ToolError
 from typing import Annotated
 from pydantic import Field
-import pandas as pd
 import plotly.express as px
 from loguru import logger
-from .db_client import get_db_client, reset_db_connections
+from .db_client import get_db_client, reset_db_connections, ResultSet
 
 # Configure logging
 logger.remove()  # Remove default handler
@@ -35,13 +36,15 @@ logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"),
 
 mcp = FastMCP('mcp-server-starrocks')
 
-# Get database client instance
-db_client = get_db_client()
 # a hint for soft limit, not enforced
 overview_length_limit = int(os.getenv('STARROCKS_OVERVIEW_LIMIT', str(20000)))
 # Global cache for table overviews: {(db_name, table_name): overview_string}
 global_table_overview_cache = {}
 
+# Get database client instance
+db_client = get_db_client()
+# Description suffix for tools, if default db is set
+description_suffix = f". db session already in default db `{db_client.default_database}`" if db_client.default_database else ""
 
 SR_PROC_DESC = '''
 Internal information exposed by StarRocks similar to linux /proc, following are some common paths:
@@ -165,38 +168,33 @@ def _get_table_details(db_name, table_name, limit=None):
 
 # tools
 
-description_suffix = f". db session already in default db `{db_client.default_database}`" if db_client.default_database else ""
-
 @mcp.tool(description="Execute a SELECT query or commands that return a ResultSet" + description_suffix)
 def read_query(query: Annotated[str, Field(description="SQL query to execute")],
-               db: Annotated[str|None, Field(description="database")] = None) -> str:
+               db: Annotated[str|None, Field(description="database")] = None) -> ToolResult:
     # return csv like result set, with column names as first row
     logger.info(f"Executing read query: {query[:100]}{'...' if len(query) > 100 else ''}")
-    logger.debug(f"Database: {db or 'default'}")
     result = db_client.execute(query, db=db)
     if result.success:
         logger.info(f"Query executed successfully, returned {len(result.rows) if result.rows else 0} rows")
     else:
         logger.error(f"Query failed: {result.error_message}")
-    return result.to_string(limit=overview_length_limit)
+    return ToolResult(content=[TextContent(type='text', text=result.to_string(limit=1000))],
+                      structured_content=result.to_dict())
 
 
 @mcp.tool(description="Execute a DDL/DML or other StarRocks command that do not have a ResultSet" + description_suffix)
 def write_query(query: Annotated[str, Field(description="SQL to execute")],
-                db: Annotated[str|None, Field(description="database")] = None) -> str:
+                db: Annotated[str|None, Field(description="database")] = None) -> ToolResult:
     logger.info(f"Executing write query: {query[:100]}{'...' if len(query) > 100 else ''}")
-    logger.debug(f"Database: {db or 'default'}")
     result = db_client.execute(query, db=db)
     if not result.success:
         logger.error(f"Write query failed: {result.error_message}")
-        return result.error_message
-
-    if result.rows_affected is not None and result.rows_affected >= 0:
+    elif result.rows_affected is not None and result.rows_affected >= 0:
         logger.info(f"Write query executed successfully, {result.rows_affected} rows affected in {result.execution_time:.2f}s")
-        return f"Query OK, {result.rows_affected} rows affected ({result.execution_time:.2f} sec)"
     else:
         logger.info(f"Write query executed successfully in {result.execution_time:.2f}s")
-        return f"Query OK ({result.execution_time:.2f} sec)"
+    return ToolResult(content=[TextContent(type='text', text=result.to_string(limit=1000))],
+                      structured_content=result.to_dict())
 
 @mcp.tool(description="Analyze a query and get analyze result using query profile" + description_suffix)
 def analyze_query(

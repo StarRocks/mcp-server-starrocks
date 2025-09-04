@@ -15,6 +15,7 @@
 import io
 import os
 import time
+import re
 from typing import Optional, List, Any, Union, Literal
 from dataclasses import dataclass
 import mysql.connector
@@ -67,14 +68,65 @@ class ResultSet:
             output.write(line)
         return output.getvalue()
 
+    def to_dict(self) -> dict:
+        ret = {
+            "success": self.success,
+            "execution_time": self.execution_time,
+        }
+        if self.column_names is not None:
+            ret["column_names"] = self.column_names
+            ret["rows"] = self.rows
+        if self.rows_affected is not None:
+            ret["rows_affected"] = self.rows_affected
+        if self.error_message:
+            ret["error_message"] = self.error_message
+        return ret
+
+
+def parse_connection_url(connection_url: str) -> dict:
+    """
+    Parse `(<schema>://)?user:password@host:port/database` into dict with user, password, host, port, database.
+    <schema> is optional.
+    """
+    pattern = re.compile(
+        r'^(?:(?P<schema>[\w+]+)://)?'
+        r'(?P<user>[^:]+):(?P<password>[^@]+)@'
+        r'(?P<host>[^:/]+):(?P<port>\d+)'
+        r'(?:/(?P<database>[\w-]+))?$'
+    )
+    match = pattern.match(connection_url)
+    if not match:
+        raise ValueError(f"Invalid connection URL: {connection_url}")
+    return match.groupdict()
+
 
 class DBClient:
     """Simplified database client for StarRocks connection and query execution."""
     
     def __init__(self):
+        self.enable_dummy_test = bool(os.getenv('STARROCKS_DUMMY_TEST'))
         self.enable_arrow_flight_sql = bool(os.getenv('STARROCKS_FE_ARROW_FLIGHT_SQL_PORT'))
-        self.default_database = os.getenv('STARROCKS_DB')
-        
+        if os.getenv('STARROCKS_URL'):
+            self.connection_params = parse_connection_url(os.getenv('STARROCKS_URL'))
+        else:
+            self.connection_params = {
+                'host': os.getenv('STARROCKS_HOST', 'localhost'),
+                'port': int(os.getenv('STARROCKS_PORT', '9030')),
+                'user': os.getenv('STARROCKS_USER', 'root'),
+                'password': os.getenv('STARROCKS_PASSWORD', ''),
+                'database': os.getenv('STARROCKS_DB', None),
+            }
+        self.connection_params.update(**{
+            'auth_plugin': os.getenv('STARROCKS_MYSQL_AUTH_PLUGIN', 'mysql_native_password'),
+            'pool_size': int(os.getenv('STARROCKS_POOL_SIZE', '10')),
+            'pool_name': 'mcp_starrocks_pool',
+            'pool_reset_session': True,
+            'autocommit': True,
+            'connection_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
+            'connect_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
+        })
+        self.default_database = self.connection_params.get('database')
+
         # MySQL connection pool
         self._connection_pool = None
         
@@ -84,25 +136,8 @@ class DBClient:
     def _get_connection_pool(self):
         """Get or create a connection pool for MySQL connections."""
         if self._connection_pool is None:
-            connection_params = {
-                'host': os.getenv('STARROCKS_HOST', 'localhost'),
-                'port': int(os.getenv('STARROCKS_PORT', '9030')),
-                'user': os.getenv('STARROCKS_USER', 'root'),
-                'password': os.getenv('STARROCKS_PASSWORD', ''),
-                'auth_plugin': os.getenv('STARROCKS_MYSQL_AUTH_PLUGIN', 'mysql_native_password'),
-                'pool_size': int(os.getenv('STARROCKS_POOL_SIZE', '10')),
-                'pool_name': 'mcp_starrocks_pool',
-                'pool_reset_session': True,
-                'autocommit': True,
-                'connection_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
-                'connect_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
-            }
-            
-            if self.default_database:
-                connection_params['database'] = self.default_database
-            
             try:
-                self._connection_pool = mysql.connector.pooling.MySQLConnectionPool(**connection_params)
+                self._connection_pool = mysql.connector.pooling.MySQLConnectionPool(**self.connection_params)
             except MySQLError as conn_err:
                 raise conn_err
         
@@ -138,10 +173,10 @@ class DBClient:
     
     def _create_adbc_connection(self):
         """Create a new ADBC connection."""
-        fe_host = os.getenv('STARROCKS_HOST', 'localhost')
+        fe_host = self.connection_params['host']
         fe_port = os.getenv('STARROCKS_FE_ARROW_FLIGHT_SQL_PORT', '')
-        user = os.getenv('STARROCKS_USER', 'root')
-        password = os.getenv('STARROCKS_PASSWORD', '')
+        user = self.connection_params['user']
+        password = self.connection_params['password']
         
         try:
             connection = flight_sql.connect(
@@ -230,9 +265,27 @@ class DBClient:
         Returns:
             ResultSet with column_names and rows, optionally with pandas DataFrame
         """
+        start_time = time.time()
+        
+        # If dummy test mode is enabled, return dummy data without connecting to database
+        if self.enable_dummy_test:
+            column_names = ['name']
+            rows = [['aaa'], ['bbb'], ['ccc']]
+            pandas_df = None
+            
+            if return_format == "pandas":
+                pandas_df = pd.DataFrame(rows, columns=column_names)
+            
+            return ResultSet(
+                success=True,
+                column_names=column_names,
+                rows=rows,
+                execution_time=time.time() - start_time,
+                pandas=pandas_df
+            )
+        
         conn = None
         cursor = None
-        start_time = time.time()
         try:
             conn = self._get_connection()
             # Switch database if specified
