@@ -64,8 +64,11 @@ class ResultSet:
         for row in self.rows:
             line = to_csv_line(row) + "\n"
             if limit is not None and output.tell() + len(line) > limit:
+                output.write("...\n")
                 break
             output.write(line)
+        output.write(f"Total rows: {len(self.rows)}\n")
+        output.write(f"Execution time: {self.execution_time:.3f}s\n");
         return output.getvalue()
 
     def to_dict(self) -> dict:
@@ -303,38 +306,91 @@ class DBClient:
                 cursor_temp.close()
             cursor = conn.cursor()
             cursor.execute(statement)
-            # Handle result set queries (SELECT, SHOW, DESCRIBE, etc.)
+            
+            # Initialize variables to track the last result set
+            last_result = None
+            last_affected_rows = None
+            
+            # Process first result set
             if cursor.description:
                 column_names = [desc[0] for desc in cursor.description]
-                pandas_df = None
                 
                 if self.enable_arrow_flight_sql:
                     arrow_result = cursor.fetchallarrow()
-                    if return_format == "pandas":
-                        pandas_df = arrow_result.to_pandas()
-                        rows = pandas_df.values.tolist()
+                    pandas_df = arrow_result.to_pandas() if return_format == "pandas" else None
+                    rows = arrow_result.to_pandas().values.tolist()
+                    
+                    # Check if this is a status result for DML operations (INSERT/UPDATE/DELETE)
+                    # Arrow Flight SQL returns status results as a single column 'StatusResult' 
+                    # Note: StarRocks Arrow Flight SQL seems to always return '0' in StatusResult,
+                    # so we use cursor.rowcount when available as a fallback
+                    if (len(column_names) == 1 and column_names[0] == 'StatusResult' and 
+                        len(rows) == 1 and len(rows[0]) == 1):
+                        try:
+                            status_value = int(rows[0][0])
+                            # If status_value is 0 but we have cursor.rowcount, prefer that
+                            if status_value == 0 and hasattr(cursor, 'rowcount') and cursor.rowcount > 0:
+                                last_affected_rows = cursor.rowcount
+                            else:
+                                last_affected_rows = status_value
+                            last_result = None  # Don't treat this as a regular result set
+                        except (ValueError, TypeError):
+                            # If we can't parse the status result as an integer, treat it as a regular result
+                            last_result = ResultSet(
+                                success=True,
+                                column_names=column_names,
+                                rows=rows,
+                                execution_time=0,  # Will be set at the end
+                                pandas=pandas_df
+                            )
                     else:
-                        pandas_df = None
-                        rows = arrow_result.to_pandas().values.tolist()
+                        last_result = ResultSet(
+                            success=True,
+                            column_names=column_names,
+                            rows=rows,
+                            execution_time=0,  # Will be set at the end
+                            pandas=pandas_df
+                        )
                 else:
                     rows = cursor.fetchall()
-                    if return_format == "pandas":
-                        pandas_df = pd.DataFrame(rows, columns=column_names)
-                    else:
-                        pandas_df = None
-                
-                return ResultSet(
-                    success=True,
-                    column_names=column_names,
-                    rows=rows,
-                    execution_time=time.time() - start_time,
-                    pandas=pandas_df
-                )
+                    pandas_df = pd.DataFrame(rows, columns=column_names) if return_format == "pandas" else None
+                    
+                    last_result = ResultSet(
+                        success=True,
+                        column_names=column_names,
+                        rows=rows,
+                        execution_time=0,  # Will be set at the end
+                        pandas=pandas_df
+                    )
             else:
-                affected_rows = cursor.rowcount if cursor.rowcount >= 0 else None
+                last_affected_rows = cursor.rowcount if cursor.rowcount >= 0 else None
+            
+            # Process additional result sets (for multi-statement queries)
+            # Note: Arrow Flight SQL may not support nextset(), so we check for it
+            if not self.enable_arrow_flight_sql and hasattr(cursor, 'nextset'):
+                while cursor.nextset():
+                    if cursor.description:
+                        column_names = [desc[0] for desc in cursor.description]
+                        rows = cursor.fetchall()
+                        pandas_df = pd.DataFrame(rows, columns=column_names) if return_format == "pandas" else None
+
+                        last_result = ResultSet(
+                            success=True,
+                            column_names=column_names,
+                            rows=rows,
+                            execution_time=0,  # Will be set at the end
+                            pandas=pandas_df
+                        )
+                    else:
+                        last_affected_rows = cursor.rowcount if cursor.rowcount >= 0 else None
+            # Return the last result set found
+            if last_result is not None:
+                last_result.execution_time = time.time() - start_time
+                return last_result
+            else:
                 return ResultSet(
                     success=True,
-                    rows_affected=affected_rows,
+                    rows_affected=last_affected_rows,
                     execution_time=time.time() - start_time
                 )
         except (MySQLError, adbcError) as e:

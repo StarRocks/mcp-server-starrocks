@@ -63,9 +63,7 @@ Then config the MCP like this:
         "STARROCKS_PORT": "default 9030",
         "STARROCKS_USER": "default root",
         "STARROCKS_PASSWORD": "default empty",
-        "STARROCKS_DB": "default empty",
-        "STARROCKS_OVERVIEW_LIMIT": "default 20000",
-        "STARROCKS_MYSQL_AUTH_PLUGIN":"mysql_clear_password"
+        "STARROCKS_DB": "default empty"
       }
     }
   }
@@ -81,9 +79,7 @@ Then config the MCP like this:
       "command": "uv",
       "args": ["run", "--with", "mcp-server-starrocks", "mcp-server-starrocks"],
       "env": {
-        "STARROCKS_URL": "root:password@localhost:9030/my_database",
-        "STARROCKS_OVERVIEW_LIMIT": "default 20000",
-        "STARROCKS_MYSQL_AUTH_PLUGIN":"mysql_clear_password"
+        "STARROCKS_URL": "root:password@localhost:9030/my_database"
       }
     }
   }
@@ -108,9 +104,7 @@ Then config the MCP like this:
         "STARROCKS_PORT": "default 9030",
         "STARROCKS_USER": "default root",
         "STARROCKS_PASSWORD": "default empty",
-        "STARROCKS_DB": "default empty",
-        "STARROCKS_OVERVIEW_LIMIT": "default 20000",
-        "STARROCKS_MYSQL_AUTH_PLUGIN":"mysql_clear_password"
+        "STARROCKS_DB": "default empty"
       }
     }
   }
@@ -131,9 +125,7 @@ Then config the MCP like this:
         "mcp-server-starrocks"
       ],
       "env": {
-        "STARROCKS_URL": "root:password@localhost:9030/my_database",
-        "STARROCKS_OVERVIEW_LIMIT": "default 20000",
-        "STARROCKS_MYSQL_AUTH_PLUGIN":"mysql_clear_password"
+        "STARROCKS_URL": "root:password@localhost:9030/my_database"
       }
     }
   }
@@ -280,7 +272,7 @@ You can configure StarRocks connection using either individual environment varia
   - **Input:**
     ```json
     {
-      "db": "database_name", // Optional if STARROCKS_DB env var is set.
+      "db": "database_name", // Optional if default database is set.
       "refresh": false // Optional, boolean. Set to true to bypass the cache for all tables in the DB. Defaults to false.
     }
     ```
