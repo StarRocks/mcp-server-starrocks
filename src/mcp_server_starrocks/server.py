@@ -31,7 +31,7 @@ import plotly.graph_objs
 from loguru import logger
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
-from .db_client import get_db_client, reset_db_connections, ResultSet
+from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput
 
 # Configure logging
 logger.remove()  # Remove default handler
@@ -216,6 +216,25 @@ def analyze_query(
     else:
         logger.warning("Analyze query called without valid UUID or SQL")
         return f"Failed to analyze query, the reasons maybe: 1.query id is not standard uuid format; 2.the SQL statement have spelling error."
+
+
+@mcp.tool(description="Run a query to get it's query dump and profile, output very large, need special tools to do further processing")
+def collect_query_dump_and_profile(
+        query: Annotated[str, Field(description="query to execute")],
+        db: Annotated[str|None, Field(description="database")] = None
+) -> ToolResult:
+    logger.info(f"Collecting query dump and profile for query: {query[:100]}{'...' if len(query) > 100 else ''}")
+    result : PerfAnalysisInput = db_client.collect_perf_analysis_input(query, db=db)
+    if result.get('error_message'):
+        status = f"collecting query dump and profile failed, query_id={result.get('query_id')} error_message={result.get('error_message')}"
+        logger.warning(status)
+    else:
+        status = f"collecting query dump and profile succeeded, but it's only for user/tool, not for AI, query_id={result.get('query_id')}"
+        logger.info(status)
+    return ToolResult(
+        content=[TextContent(type='text', text=status)],
+        structured_content=result,
+    )
 
 
 def validate_plotly_expr(expr: str):

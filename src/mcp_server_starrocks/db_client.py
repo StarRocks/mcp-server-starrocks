@@ -16,7 +16,8 @@ import io
 import os
 import time
 import re
-from typing import Optional, List, Any, Union, Literal
+import json
+from typing import Optional, List, Any, Union, Literal, TypedDict, NotRequired
 from dataclasses import dataclass
 import mysql.connector
 from mysql.connector import Error as MySQLError
@@ -86,6 +87,16 @@ class ResultSet:
         return ret
 
 
+class PerfAnalysisInput(TypedDict):
+    error_message: NotRequired[Optional[str]]
+    query_id: NotRequired[Optional[str]]
+    rows_returned: NotRequired[Optional[int]]
+    duration: NotRequired[Optional[float]]
+    query_dump: NotRequired[Optional[dict]]
+    profile: NotRequired[Optional[str]]
+    analyze_profile: NotRequired[Optional[str]]
+
+
 def parse_connection_url(connection_url: str) -> dict:
     """
     Parse `(<schema>://)?user:password@host:port/database` into dict with user, password, host, port, database.
@@ -101,6 +112,12 @@ def parse_connection_url(connection_url: str) -> dict:
     if not match:
         raise ValueError(f"Invalid connection URL: {connection_url}")
     return match.groupdict()
+
+ANSI_ESCAPE_PATTERN = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
+def remove_ansi_codes(text):
+  return ANSI_ESCAPE_PATTERN.sub('', text)
 
 
 class DBClient:
@@ -250,82 +267,31 @@ class DBClient:
             self._connection_pool = None
         elif self.enable_arrow_flight_sql:
             self._reset_adbc_connection()
-    
-    def execute(
-        self, 
-        statement: str, 
-        db: Optional[str] = None,
-        return_format: Literal["raw", "pandas"] = "raw"
-    ) -> ResultSet:
-        """
-        Execute a SQL statement and return results.
-        
-        Args:
-            statement: SQL statement to execute
-            db: Optional database to use (overrides default)
-            return_format: "raw" returns ResultSet with rows, "pandas" also populates pandas field
-            
-        Returns:
-            ResultSet with column_names and rows, optionally with pandas DataFrame
-        """
-        start_time = time.time()
-        
-        # If dummy test mode is enabled, return dummy data without connecting to database
-        if self.enable_dummy_test:
-            column_names = ['name']
-            rows = [['aaa'], ['bbb'], ['ccc']]
-            pandas_df = None
-            
-            if return_format == "pandas":
-                pandas_df = pd.DataFrame(rows, columns=column_names)
-            
-            return ResultSet(
-                success=True,
-                column_names=column_names,
-                rows=rows,
-                execution_time=time.time() - start_time,
-                pandas=pandas_df
-            )
-        
-        conn = None
+
+
+    def _execute(self, conn, statement: str, params=None, return_format:str="raw") -> ResultSet:
         cursor = None
+        start_time = time.time()
         try:
-            conn = self._get_connection()
-            # Switch database if specified
-            if db and db != self.default_database:
-                cursor_temp = conn.cursor()
-                try:
-                    cursor_temp.execute(f"USE `{db}`")
-                except (MySQLError, adbcError) as db_err:
-                    cursor_temp.close()
-                    return ResultSet(
-                        success=False,
-                        error_message=f"Error switching to database '{db}': {str(db_err)}",
-                        execution_time=time.time() - start_time
-                    )
-                cursor_temp.close()
             cursor = conn.cursor()
-            cursor.execute(statement)
-            
+            cursor.execute(statement, params)
             # Initialize variables to track the last result set
             last_result = None
             last_affected_rows = None
-            
             # Process first result set
             if cursor.description:
                 column_names = [desc[0] for desc in cursor.description]
-                
                 if self.enable_arrow_flight_sql:
                     arrow_result = cursor.fetchallarrow()
                     pandas_df = arrow_result.to_pandas() if return_format == "pandas" else None
                     rows = arrow_result.to_pandas().values.tolist()
-                    
+
                     # Check if this is a status result for DML operations (INSERT/UPDATE/DELETE)
-                    # Arrow Flight SQL returns status results as a single column 'StatusResult' 
+                    # Arrow Flight SQL returns status results as a single column 'StatusResult'
                     # Note: StarRocks Arrow Flight SQL seems to always return '0' in StatusResult,
                     # so we use cursor.rowcount when available as a fallback
-                    if (len(column_names) == 1 and column_names[0] == 'StatusResult' and 
-                        len(rows) == 1 and len(rows[0]) == 1):
+                    if (len(column_names) == 1 and column_names[0] == 'StatusResult' and
+                            len(rows) == 1 and len(rows[0]) == 1):
                         try:
                             status_value = int(rows[0][0])
                             # If status_value is 0 but we have cursor.rowcount, prefer that
@@ -354,7 +320,7 @@ class DBClient:
                 else:
                     rows = cursor.fetchall()
                     pandas_df = pd.DataFrame(rows, columns=column_names) if return_format == "pandas" else None
-                    
+
                     last_result = ResultSet(
                         success=True,
                         column_names=column_names,
@@ -364,7 +330,6 @@ class DBClient:
                     )
             else:
                 last_affected_rows = cursor.rowcount if cursor.rowcount >= 0 else None
-            
             # Process additional result sets (for multi-statement queries)
             # Note: Arrow Flight SQL may not support nextset(), so we check for it
             if not self.enable_arrow_flight_sql and hasattr(cursor, 'nextset'):
@@ -383,6 +348,7 @@ class DBClient:
                         )
                     else:
                         last_affected_rows = cursor.rowcount if cursor.rowcount >= 0 else None
+                        last_result = None
             # Return the last result set found
             if last_result is not None:
                 last_result.execution_time = time.time() - start_time
@@ -412,12 +378,142 @@ class DBClient:
                     cursor.close()
                 except:
                     pass
+
+
+    def execute(
+        self, 
+        statement: str, 
+        db: Optional[str] = None,
+        return_format: Literal["raw", "pandas"] = "raw"
+    ) -> ResultSet:
+        """
+        Execute a SQL statement and return results.
+        
+        Args:
+            statement: SQL statement to execute
+            db: Optional database to use (overrides default)
+            return_format: "raw" returns ResultSet with rows, "pandas" also populates pandas field
+            
+        Returns:
+            ResultSet with column_names and rows, optionally with pandas DataFrame
+        """
+        # If dummy test mode is enabled, return dummy data without connecting to database
+        if self.enable_dummy_test:
+            column_names = ['name']
+            rows = [['aaa'], ['bbb'], ['ccc']]
+            pandas_df = None
+
+            if return_format == "pandas":
+                pandas_df = pd.DataFrame(rows, columns=column_names)
+
+            return ResultSet(
+                success=True,
+                column_names=column_names,
+                rows=rows,
+                execution_time=0.1,
+                pandas=pandas_df
+            )
+        conn = None
+        try:
+            conn = self._get_connection()
+            # Switch database if specified
+            if db and db != self.default_database:
+                cursor_temp = conn.cursor()
+                try:
+                    cursor_temp.execute(f"USE `{db}`")
+                except (MySQLError, adbcError) as db_err:
+                    cursor_temp.close()
+                    return ResultSet(
+                        success=False,
+                        error_message=f"Error switching to database '{db}': {str(db_err)}",
+                        execution_time=0
+                    )
+                cursor_temp.close()
+            return self._execute(conn, statement, None, return_format)
+        except (MySQLError, adbcError) as e:
+            self._handle_db_error(e)
+            return ResultSet(
+                success=False,
+                error_message=f"Error executing statement '{statement}': {str(e)}",
+            )
+        except Exception as e:
+            return ResultSet(
+                success=False,
+                error_message=f"Unexpected error executing statement '{statement}': {str(e)}",
+            )
+        finally:
             if conn and not self.enable_arrow_flight_sql:
                 try:
                     conn.close()
                 except:
                     pass
-    
+
+    def collect_perf_analysis_input(self, query: str, db:Optional[str]=None) -> PerfAnalysisInput:
+        conn = None
+        try:
+            conn = self._get_connection()
+            # Switch database if specified
+            if db and db != self.default_database:
+                cursor_temp = conn.cursor()
+                try:
+                    cursor_temp.execute(f"USE `{db}`")
+                except (MySQLError, adbcError) as db_err:
+                    return {"error_message":str(db_err)}
+                finally:
+                    cursor_temp.close()
+            query_dump_result = self._execute(conn, "select get_query_dump(%s, %s)", (query, False))
+            if not query_dump_result.success:
+                return {"error_message":query_dump_result.error_message}
+            ret = {
+                "query_dump": json.loads(query_dump_result.rows[0][0]),
+            }
+            start_ts = time.time()
+            profile_query = "/*+ SET_VAR (enable_profile='true') */ " + query
+            query_result = self._execute(conn, profile_query)
+            duration = time.time() - start_ts
+            ret["duration"] = duration
+            if not query_result.success:
+                ret["error_message"] = query_result.error_message
+                return ret
+            ret["rows_returned"] = len(query_result.rows) if query_result.rows else 0
+            # Try to get query id
+            query_id_result = self._execute(conn, "select last_query_id()")
+            if not query_id_result.success:
+                ret["error_message"] = query_id_result.error_message
+                return ret
+            ret["query_id"] = query_id_result.rows[0][0]
+            # Try to get query profile with retries
+            query_profile = ''
+            retry_count = 0
+            while not query_profile and retry_count < 3:
+                time.sleep(1+retry_count)
+                query_profile_result = self._execute(conn,"select get_query_profile(%s)", (ret["query_id"],))
+                if query_profile_result.success:
+                    query_profile = query_profile_result.rows[0][0]
+                retry_count += 1
+            if not query_profile:
+                ret['error_message'] = "Failed to get query profile after 3 retries"
+                return ret
+            ret['profile'] = query_profile
+            analyze_profile_result = self._execute(conn,"ANALYZE PROFILE FROM %s", (ret["query_id"],))
+            if not analyze_profile_result.success:
+                ret["error_message"] = analyze_profile_result.error_message
+                return ret
+            analyze_text = '\n'.join(row[0] for row in analyze_profile_result.rows)
+            ret['analyze_profile'] = remove_ansi_codes(analyze_text)
+            return ret
+        except (MySQLError, adbcError) as e:
+            self._handle_db_error(e)
+            return {"error_message":str(e)}
+        except Exception as e:
+            return {"error_message":str(e)}
+        finally:
+            if conn and not self.enable_arrow_flight_sql:
+                try:
+                    conn.close()
+                except:
+                    pass
+
     def reset_connections(self):
         """Public method to reset all connections."""
         self._reset_connection()
