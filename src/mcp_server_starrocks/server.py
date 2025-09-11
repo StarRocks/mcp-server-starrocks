@@ -32,6 +32,7 @@ from loguru import logger
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
 from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput
+from .db_summary_manager import get_db_summary_manager
 
 # Configure logging
 logger.remove()  # Remove default handler
@@ -47,6 +48,8 @@ global_table_overview_cache = {}
 
 # Get database client instance
 db_client = get_db_client()
+# Get database summary manager instance
+db_summary_manager = get_db_summary_manager(db_client)
 # Description suffix for tools, if default db is set
 description_suffix = f". db session already in default db `{db_client.default_database}`" if db_client.default_database else ""
 
@@ -478,6 +481,36 @@ def db_overview(
         reset_db_connections()
         stack_trace = traceback.format_exc()
         return f"Unexpected Error executing tool 'db_overview': {type(e).__name__}: {e}\nStack Trace:\n{stack_trace}"
+
+
+@mcp.tool(description="Get an intelligent database summary with table prioritization, size information, and efficient caching. Uses SHOW DATA and information_schema for optimal performance" + description_suffix)
+def db_summary(
+        db: Annotated[str|None, Field(
+            description="Database name. Optional: uses the default database if not provided.")] = None,
+        limit: Annotated[int, Field(
+            description="Output length limit in characters. Defaults to 10000. Higher values show more tables and details.")] = 10000,
+        refresh: Annotated[bool, Field(
+            description="Set to true to force refresh, ignoring cache. Defaults to false.")] = False
+) -> str:
+    try:
+        db_name = db if db else db_client.default_database
+        logger.info(f"Getting database summary for: {db_name}, limit={limit}, refresh={refresh}")
+        
+        if not db_name:
+            logger.error("Database summary called without database name")
+            return "Error: Database name not provided and no default database is set."
+        
+        # Use the database summary manager
+        summary = db_summary_manager.get_database_summary(db_name, limit=limit, refresh=refresh)
+        logger.info(f"Database summary completed for {db_name}")
+        return summary
+        
+    except Exception as e:
+        # Reset connections on unexpected errors
+        logger.exception(f"Unexpected error in db_summary for database {db}")
+        reset_db_connections()
+        stack_trace = traceback.format_exc()
+        return f"Unexpected Error executing tool 'db_summary': {type(e).__name__}: {e}\nStack Trace:\n{stack_trace}"
 
 
 async def main():
