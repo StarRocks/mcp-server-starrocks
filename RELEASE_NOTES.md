@@ -1,5 +1,42 @@
 # StarRocks MCP Server Release Notes
 
+## Version 0.1.5
+
+Major Features and Enhancements
+
+1. Connection Pooling and Architecture Refactor (commit 0fc372d)
+  - Major refactor introducing connection pooling for improved performance
+  - Extracted database client logic into separate db_client.py module
+  - Enhanced connection management and reliability
+2. Enhanced Arrow Flight SQL Support (commit 877338f)
+  - Improved Arrow Flight SQL connection handling
+  - Better result processing for high-performance queries
+  - Enhanced error handling for Arrow Flight connections
+3. New Query Analysis Tools (commit 60ca975)
+  - Added collect_query_dump_and_profile functionality
+  - Enhanced query performance analysis capabilities
+4. Database Summary Management (commits d269ebe, 5b2ca59)
+  - Added new db_summary_manager.py module
+  - Implemented database summary functionality for better overview capabilities
+  - Enhanced database exploration features
+5. Configuration Enhancements (commit fb09271)
+  - Added STARROCKS_URL configuration option
+  - Improved connection configuration flexibility
+
+  Testing and Infrastructure
+
+- Updated test suite with new test cases for database client functionality
+- Added comprehensive testing for Arrow Flight SQL features
+- Improved test infrastructure with new README documentation
+
+  Breaking Changes
+
+- Major refactor may require configuration updates for some deployment scenarios
+- Connection handling has been restructured (though backwards compatibility is maintained)
+
+## Version 0.1.4
+
+
 ## Version 0.1.3
 
 1. refactor using fastmcp

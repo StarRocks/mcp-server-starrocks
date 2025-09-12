@@ -1,6 +1,6 @@
 [project]
 name = "mcp-server-starrocks"
-version = "0.1.4"
+version = "0.1.5"
 description = "official MCP server for StarRocks"
 readme = "README.md"
 license = {text = "Apache-2.0"}
