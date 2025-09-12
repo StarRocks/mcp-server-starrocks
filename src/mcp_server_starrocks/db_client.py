@@ -99,19 +99,37 @@ class PerfAnalysisInput(TypedDict):
 
 def parse_connection_url(connection_url: str) -> dict:
     """
-    Parse `(<schema>://)?user:password@host:port/database` into dict with user, password, host, port, database.
-    <schema> is optional.
+    Parse connection URL into dict with user, password, host, port, database.
+    
+    Supports flexible formats:
+    - [<schema>://]<user>[:<password>]@<host>[:<port>][/<database>]
+    - Empty passwords: user:@host:port or user@host:port  
+    - Missing ports (uses default 9030): user:pass@host
+    - All components are optional except user and host
     """
+    # More flexible regex pattern that handles optional password and port
     pattern = re.compile(
-        r'^(?:(?P<schema>[\w+]+)://)?'
-        r'(?P<user>[^:]+):(?P<password>[^@]+)@'
-        r'(?P<host>[^:/]+):(?P<port>\d+)'
-        r'(?:/(?P<database>[\w-]+))?$'
+        r'^(?:(?P<schema>[\w+]+)://)?'           # Optional schema://
+        r'(?P<user>[^:@]+)'                     # Required username (no : or @)
+        r'(?::(?P<password>[^@]*))?'            # Optional :password (can be empty)
+        r'@(?P<host>[^:/]+)'                    # Required @host 
+        r'(?::(?P<port>\d+))?'                  # Optional :port
+        r'(?:/(?P<database>[\w-]+))?$'          # Optional /database
     )
+    
     match = pattern.match(connection_url)
     if not match:
         raise ValueError(f"Invalid connection URL: {connection_url}")
-    return match.groupdict()
+    
+    result = match.groupdict()
+    
+    # Apply defaults for missing components
+    if result['password'] is None:
+        result['password'] = ''  # Default to empty password
+    if result['port'] is None:
+        result['port'] = '9030'  # Default StarRocks port
+        
+    return result
 
 ANSI_ESCAPE_PATTERN = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
@@ -128,6 +146,8 @@ class DBClient:
         self.enable_arrow_flight_sql = bool(os.getenv('STARROCKS_FE_ARROW_FLIGHT_SQL_PORT'))
         if os.getenv('STARROCKS_URL'):
             self.connection_params = parse_connection_url(os.getenv('STARROCKS_URL'))
+            # Convert port to integer for mysql.connector
+            self.connection_params['port'] = int(self.connection_params['port'])
         else:
             self.connection_params = {
                 'host': os.getenv('STARROCKS_HOST', 'localhost'),
