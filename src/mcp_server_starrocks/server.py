@@ -422,8 +422,8 @@ def table_overview(
         stack_trace = traceback.format_exc()
         return f"Unexpected Error executing tool 'table_overview': {type(e).__name__}: {e}\nStack Trace:\n{stack_trace}"
 
-
-@mcp.tool(description="Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True" + description_suffix)
+# comment out to prefer db_summary tool
+#@mcp.tool(description="Get an overview (columns, sample rows, row count) for ALL tables in a database. Uses cache unless refresh=True" + description_suffix)
 def db_overview(
         db: Annotated[str, Field(
             description="Database name. Optional: uses the default database if not provided.")] = None,

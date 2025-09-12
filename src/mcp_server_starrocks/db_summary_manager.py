@@ -299,16 +299,12 @@ class DatabaseSummaryManager:
         large_tables = [t for t in tables_info if t.is_large_table()]
         
         lines.append(f"Total size: {self._format_bytes(total_size)}")
-        lines.append(f"Total replicas: {total_replicas}")
-        lines.append(f"Large tables: {len(large_tables)} (replica_count > 64 OR size > 2GB)")
-        lines.append("")
-        
+
         current_length = len("\n".join(lines))
         table_limit = min(len(tables_info), 50)  # Show max 50 tables
         
         # Show large tables first with full details
         if large_tables:
-            lines.append("--- Large Tables (Top Priority) ---")
             for i, table_info in enumerate(large_tables):
                 if current_length > limit * 0.8:  # Reserve 20% for smaller tables
                     lines.append(f"... and {len(large_tables) - i} more large tables")
@@ -349,17 +345,15 @@ class DatabaseSummaryManager:
         
         # Show CREATE statement if available, otherwise show column list
         if table_info.create_statement:
-            lines.append(f"  Schema:")
-            lines.append(f"    {table_info.create_statement}")
+            lines.append(table_info.create_statement)
         elif table_info.columns:
             # Sort columns by ordinal position and show as list
             sorted_columns = sorted(table_info.columns, key=lambda c: c.ordinal_position)
-            if detailed or len(sorted_columns) <= 5:
-                lines.append(f"  Columns ({len(sorted_columns)}):")
+            if detailed or len(sorted_columns) <= 20:
                 for col in sorted_columns:
-                    lines.append(f"    {col.ordinal_position}. {col.name} ({col.column_type})")
+                    lines.append(f" {col.name} ({col.column_type})")
             else:
-                lines.append(f"  Columns ({len(sorted_columns)}): {', '.join(col.name for col in sorted_columns[:3])}...")
+                lines.append(f"  Columns ({len(sorted_columns)}): {', '.join(col.name for col in sorted_columns[:100])}...")
         
         return "\n".join(lines)
     
