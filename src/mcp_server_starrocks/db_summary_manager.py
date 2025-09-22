@@ -211,7 +211,7 @@ class DatabaseSummaryManager:
                 table_name = row[0]
                 column_name = row[1]
                 ordinal_position = int(row[2]) if row[2] else 0
-                column_type = row[3]
+                column_type = 'string' if row[3] == "varchar(65533)" else row[3]
                 
                 if table_name not in table_columns:
                     table_columns[table_name] = []
@@ -351,7 +351,7 @@ class DatabaseSummaryManager:
             sorted_columns = sorted(table_info.columns, key=lambda c: c.ordinal_position)
             if detailed or len(sorted_columns) <= 20:
                 for col in sorted_columns:
-                    lines.append(f" {col.name} ({col.column_type})")
+                    lines.append(f" {col.name} {col.column_type}")
             else:
                 lines.append(f"  Columns ({len(sorted_columns)}): {', '.join(col.name for col in sorted_columns[:100])}...")
         
