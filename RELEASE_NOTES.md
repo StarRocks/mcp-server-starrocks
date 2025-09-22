@@ -1,5 +1,39 @@
 # StarRocks MCP Server Release Notes
 
+## Version 0.2.0
+
+### Major Features and Enhancements
+
+1. **Enhanced STARROCKS_URL Parsing** (commit 80ac0ba)
+   - Support for flexible connection URL formats including empty passwords
+   - Handle patterns like "root:@localhost:9030" and "root@localhost:9030"
+   - Support missing ports with default 9030: "root:password@localhost"
+   - Support minimal format: "user@host" with empty password and default port
+   - Maintain backward compatibility with existing valid URLs
+   - Comprehensive test coverage for edge cases
+   - Fixed DBClient to properly convert string port to integer
+
+2. **Connection Health Monitoring** (commit b8a80c6)
+   - Added new connection_health_checker.py module
+   - Implemented health checking functionality for database connections
+   - Enhanced connection reliability and monitoring capabilities
+   - Proactive connection health management
+
+3. **Visualization Enhancements** (commit b6f26ec)
+   - Added format parameter to query_and_plotly_chart tool
+   - Enhanced chart generation capabilities with configurable output formats
+   - Improved flexibility for data visualization workflows
+
+### Testing and Infrastructure
+
+- Added comprehensive test coverage for STARROCKS_URL parsing edge cases
+- Enhanced test suite with new test cases for database client functionality
+- Improved error handling and validation for connection scenarios
+
+### Breaking Changes
+
+None - this release maintains full backward compatibility with version 0.1.5.
+
 ## Version 0.1.5
 
 Major Features and Enhancements
