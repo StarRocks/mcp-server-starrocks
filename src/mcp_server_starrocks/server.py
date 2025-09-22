@@ -19,6 +19,8 @@ import math
 import sys
 import os
 import traceback
+import threading
+import time
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 from fastmcp.tools.tool import ToolResult
@@ -33,6 +35,12 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
 from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput
 from .db_summary_manager import get_db_summary_manager
+from .connection_health_checker import (
+    initialize_health_checker,
+    start_connection_health_checker,
+    stop_connection_health_checker,
+    check_connection_health
+)
 
 # Configure logging
 logger.remove()  # Remove default handler
@@ -52,6 +60,10 @@ db_client = get_db_client()
 db_summary_manager = get_db_summary_manager(db_client)
 # Description suffix for tools, if default db is set
 description_suffix = f". db session already in default db `{db_client.default_database}`" if db_client.default_database else ""
+
+# Initialize connection health checker
+_health_checker = initialize_health_checker(db_client)
+
 
 SR_PROC_DESC = '''
 Internal information exposed by StarRocks similar to linux /proc, following are some common paths:
@@ -534,13 +546,16 @@ async def main():
             logger.info("Starting tool test")
             # Use the test version without tool wrapper
             result = db_client.execute("show databases").to_string()
-            print("Result:")
-            print(result)
+            logger.info("Result:")
+            logger.info(result)
             logger.info("Tool test completed")
         finally:
+            stop_connection_health_checker()
             reset_db_connections()
         return
-    
+
+    # Start connection health checker
+    start_connection_health_checker()
     try:
         # Add CORS middleware for HTTP transports to allow web frontend access
         if args.mode in ['http', 'streamable-http', 'sse']:
@@ -565,6 +580,9 @@ async def main():
     except Exception as e:
         logger.exception("Failed to start MCP server")
         raise
+    finally:
+        # Stop connection health checker when server shuts down
+        stop_connection_health_checker()
 
 
 if __name__ == "__main__":
