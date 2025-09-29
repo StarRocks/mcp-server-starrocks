@@ -122,14 +122,27 @@ def parse_connection_url(connection_url: str) -> dict:
         raise ValueError(f"Invalid connection URL: {connection_url}")
     
     result = match.groupdict()
-    
-    # Apply defaults for missing components
-    if result['password'] is None:
-        result['password'] = ''  # Default to empty password
-    if result['port'] is None:
-        result['port'] = '9030'  # Default StarRocks port
-        
-    return result
+
+    # Only keep connection parameters that mysql.connector supports
+    # Filter out None values and schema (which is not a mysql.connector parameter)
+    filtered_result = {}
+
+    # Always include user and host as they are required
+    filtered_result['user'] = result['user']
+    filtered_result['host'] = result['host']
+
+    # Include password (default to empty string if None)
+    filtered_result['password'] = result['password'] if result['password'] is not None else ''
+
+    # Include port (default to 9030 if None)
+    filtered_result['port'] = result['port'] if result['port'] is not None else '9030'
+
+    # Always include database (None if not provided in URL)
+    filtered_result['database'] = result['database']
+
+    # Note: schema is intentionally excluded as it's not supported by mysql.connector
+
+    return filtered_result
 
 ANSI_ESCAPE_PATTERN = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 

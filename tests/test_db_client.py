@@ -626,9 +626,8 @@ class TestParseConnectionUrl:
         """Test parsing basic connection URL without schema."""
         url = "root:password123@localhost:9030/test_db"
         result = parse_connection_url(url)
-        
+
         expected = {
-            'schema': None,
             'user': 'root',
             'password': 'password123',
             'host': 'localhost',
@@ -641,9 +640,8 @@ class TestParseConnectionUrl:
         """Test parsing connection URL with schema."""
         url = "mysql://admin:secret@db.example.com:3306/production"
         result = parse_connection_url(url)
-        
+
         expected = {
-            'schema': 'mysql',
             'user': 'admin',
             'password': 'secret',
             'host': 'db.example.com',
@@ -659,10 +657,10 @@ class TestParseConnectionUrl:
             ("jdbc+mysql://user:pass@host:3306/db", "jdbc+mysql"),
             ("postgresql://user:pass@host:5432/db", "postgresql"),
         ]
-        
+
         for url, expected_schema in test_cases:
             result = parse_connection_url(url)
-            assert result['schema'] == expected_schema
+            # Schema is no longer returned in the result
             assert result['user'] == 'user'
             assert result['password'] == 'pass'
             assert result['host'] == 'host'
@@ -672,9 +670,8 @@ class TestParseConnectionUrl:
         """Test that URL with empty password now works."""
         url = "root:@localhost:9030/test_db"
         result = parse_connection_url(url)
-        
+
         expected = {
-            'schema': None,
             'user': 'root',
             'password': '',  # Empty password
             'host': 'localhost',
@@ -689,7 +686,6 @@ class TestParseConnectionUrl:
         result = parse_connection_url(url)
         
         expected = {
-            'schema': None,
             'user': 'root',
             'password': '',  # Default empty password
             'host': 'localhost',
@@ -704,7 +700,6 @@ class TestParseConnectionUrl:
         result = parse_connection_url(url)
         
         expected = {
-            'schema': None,
             'user': 'root',
             'password': 'password',
             'host': 'localhost',
@@ -719,7 +714,6 @@ class TestParseConnectionUrl:
         result = parse_connection_url(url)
         
         expected = {
-            'schema': None,
             'user': 'user',
             'password': '',  # Default empty password
             'host': 'host',
@@ -734,7 +728,6 @@ class TestParseConnectionUrl:
         result = parse_connection_url(url)
         
         expected = {
-            'schema': None,
             'user': 'user',
             'password': ':',  # Literal colon as password
             'host': 'host',
@@ -861,7 +854,6 @@ class TestParseConnectionUrl:
         url = "user:password@host:9030"
         result = parse_connection_url(url)
         
-        assert result['schema'] == None
         assert result['user'] == 'user'
         assert result['password'] == 'password'
         assert result['host'] == 'host'
@@ -873,7 +865,6 @@ class TestParseConnectionUrl:
         url = "mysql://admin:secret@db.example.com:3306"
         result = parse_connection_url(url)
         
-        assert result['schema'] == 'mysql'
         assert result['user'] == 'admin'
         assert result['password'] == 'secret'
         assert result['host'] == 'db.example.com'
@@ -890,7 +881,7 @@ class TestParseConnectionUrl:
         
         for url, expected_schema in test_cases:
             result = parse_connection_url(url)
-            assert result['schema'] == expected_schema
+            # Schema is no longer returned in the result
             assert result['user'] == 'user'
             assert result['password'] == 'pass'
             assert result['host'] == 'host'
@@ -926,7 +917,7 @@ class TestParseConnectionUrl:
             "mysql://root:pass@localhost:3306/db",
         ]
         
-        expected_keys = {'schema', 'user', 'password', 'host', 'port', 'database'}
+        expected_keys = {'user', 'password', 'host', 'port', 'database'}
         
         for url in test_cases:
             result = parse_connection_url(url)
@@ -939,7 +930,7 @@ class TestParseConnectionUrl:
         url = "custom+schema://test_user:complex!pass@sub.domain.com:12345/my_db-name"
         result = parse_connection_url(url)
         
-        assert result['schema'] == 'custom+schema'
+        # Schema is no longer returned in the result
         assert result['user'] == 'test_user'
         assert result['password'] == 'complex!pass'
         assert result['host'] == 'sub.domain.com'
