@@ -593,7 +593,7 @@ async def main():
                 middleware=cors_middleware
             )
         else:
-            await mcp.run_async(transport=args.mode, host=args.host, port=args.port)
+            await mcp.run_async(transport=args.mode)
     except Exception as e:
         logger.exception("Failed to start MCP server")
         raise
