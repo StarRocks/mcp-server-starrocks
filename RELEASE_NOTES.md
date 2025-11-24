@@ -1,5 +1,38 @@
 # StarRocks MCP Server Release Notes
 
+## Version 0.3.0
+
+### Bug Fixes
+
+1. **Fix TypeError in stdio Transport Mode** (commit 58f8b9e, PR #26)
+   - Fixed TypeError when running server in 'stdio' mode
+   - Removed incorrect host/port parameters passed to run_async() for stdio transport
+   - stdio mode no longer requires or accepts host/port configuration
+   - Thanks to @nightingale10 for the contribution
+
+2. **Fix STARROCKS_URL Connection Parameter Handling** (commit 249e17b)
+   - Fixed error when using STARROCKS_URL with unsupported schema parameter
+   - Improved parse_connection_url() to filter out parameters not supported by mysql.connector
+   - Removed 'schema' from connection parameters as it's not a valid mysql.connector parameter
+   - Now only returns supported connection parameters: user, host, password, port, database
+   - Enhanced robustness of connection URL parsing
+
+3. **Fix Database Summary Refresh Logic** (commit 9a6f3f6)
+   - Fixed logic bug in db_summary_manager.py that caused refresh to fail
+   - Corrected short-circuit evaluation issue in _sync_table_list() call
+   - Changed condition from `if refresh or not self._sync_table_list(database)` to `if not self._sync_table_list(database, force=refresh)`
+   - Database summary refresh now works correctly when refresh=True is specified
+
+### Testing Updates
+
+- Updated test suite to reflect removal of 'schema' parameter from connection URL parsing
+- All existing tests pass with the new connection parameter filtering logic
+- Enhanced test coverage for edge cases in connection URL parsing
+
+### Breaking Changes
+
+None - this release maintains full backward compatibility with version 0.2.0. All changes are internal bug fixes that improve reliability and correctness.
+
 ## Version 0.2.0
 
 ### Major Features and Enhancements
