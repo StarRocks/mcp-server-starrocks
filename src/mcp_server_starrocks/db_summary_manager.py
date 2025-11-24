@@ -247,7 +247,7 @@ class DatabaseSummaryManager:
         logger.info(f"Generating database summary for {database}, limit={limit}, refresh={refresh}")
         
         # Sync table list
-        if refresh or not self._sync_table_list(database):
+        if not self._sync_table_list(database, force=refresh):
             return f"Error: Failed to sync table information for database '{database}'"
         
         # Get all tables for this database from cache
