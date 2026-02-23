@@ -403,7 +403,7 @@ def query_and_plotly_chart(
         )
 
 
-@mcp.tool(description="Get an overview of a specific table: columns, sample rows (up to 5), and total row count. Uses cache unless refresh=true" + description_suffix)
+@mcp.tool(description="Get an overview of a specific table: columns, sample rows (up to 3), and total row count. Uses cache unless refresh=true" + description_suffix)
 def table_overview(
         table: Annotated[str, Field(
             description="Table name, optionally prefixed with database name (e.g., 'db_name.table_name'). If database is omitted, uses the default database.")],
