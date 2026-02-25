@@ -177,6 +177,7 @@ class DBClient:
             'autocommit': True,
             'connection_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
             'connect_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
+            'use_pure': os.getenv('STARROCKS_USE_PURE', 'false').lower() in ('true', '1', 'yes'),
         })
         self.default_database = self.connection_params.get('database')
 
