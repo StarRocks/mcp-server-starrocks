@@ -37,6 +37,10 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
 from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput
 from .db_summary_manager import get_db_summary_manager
+from .query_profile_analytics import (
+    QueryProfileAnalyticsTools,
+    format_slow_query_analysis,
+)
 from .table_management_tools import (
     TableManagementTools,
     format_top_bad_tables_analysis,
@@ -130,6 +134,7 @@ db_client = get_db_client()
 # Get database summary manager instance
 db_summary_manager = get_db_summary_manager(db_client)
 table_management_tools = TableManagementTools(db_client)
+query_profile_analytics_tools = QueryProfileAnalyticsTools(db_client)
 # Description suffix for tools, if default db is set
 description_suffix = f". Global default db is `{db_client.default_database}`; use set_session_db to override per session" \
     if db_client.default_database else ". Use set_session_db to set a per-session default database"
@@ -380,6 +385,25 @@ def write_query(query: Annotated[str, Field(description="SQL to execute")],
         logger.info(f"Write query executed successfully in {result.execution_time:.2f}s")
     return ToolResult(content=[TextContent(type='text', text=result.to_string(limit=2000))],
                       structured_content=result.to_dict())
+
+@mcp.tool(description="Analyze top N slowest queries and identify performance bottlenecks")
+def analyze_slow_queries_topn(
+        days: Annotated[int, Field(description="Number of days of audit history to analyze")] = 7,
+        top_n: Annotated[int, Field(description="Number of slow queries to return")] = 20,
+        min_execution_time_ms: Annotated[int, Field(description="Minimum query execution time in milliseconds")] = 1000,
+        ctx: Context = None,
+) -> ToolResult:
+    """Analyze top N slow queries and performance patterns."""
+    result = query_profile_analytics_tools.analyze_slow_queries_topn(
+        days=days,
+        top_n=top_n,
+        min_execution_time_ms=min_execution_time_ms,
+    )
+    return ToolResult(
+        content=[TextContent(type='text', text=format_slow_query_analysis(result))],
+        structured_content=result,
+    )
+
 
 @mcp.tool(description="Analyze a query and get analyze result using query profile" + description_suffix)
 def analyze_query(
