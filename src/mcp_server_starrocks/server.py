@@ -36,10 +36,11 @@ import plotly.graph_objs
 from loguru import logger
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
-from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput
+from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput, remove_ansi_codes
 from .db_summary_manager import get_db_summary_manager
 from .table_management_tools import (
     TableManagementTools,
+    format_top_bad_tables_analysis,
     format_top_hot_tables_analysis,
 )
 from .connection_health_checker import (
@@ -72,7 +73,6 @@ _transport_mode = os.getenv('MCP_TRANSPORT_MODE', 'stdio')
 _EXT_TO_FORMAT = {'.csv': 'csv', '.tsv': 'tsv', '.json': 'json',
                   '.jsonl': 'jsonl', '.ndjson': 'jsonl'}
 _SUPPORTED_OUTPUT_FORMATS = ('csv', 'tsv', 'json', 'jsonl')
-
 
 def _resolve_output_path(output_file: str) -> str:
     """Resolve output_file to an absolute path.
@@ -443,6 +443,26 @@ def top_hot_tables(
     )
     return ToolResult(
         content=[TextContent(type='text', text=format_top_hot_tables_analysis(result))],
+        structured_content=result,
+    )
+
+@mcp.tool(description="Get top bad tables by table health score")
+def top_bad_tables(
+        db: Annotated[str|None, Field(
+            description="Optional database/schema filter. Matches table health db_name exactly.")] = None,
+        table: Annotated[str|None, Field(
+            description="Optional table name substring filter. Matches table_name with LIKE.")] = None,
+        top_n: Annotated[int, Field(
+            description="Number of bad tables to return. Defaults to 20 and is capped at 100.")] = 20,
+        ctx: Context = None,
+) -> ToolResult:
+    result = table_management_tools.get_top_bad_tables(
+        db=db,
+        table=table,
+        top_n=top_n,
+    )
+    return ToolResult(
+        content=[TextContent(type='text', text=format_top_bad_tables_analysis(result))],
         structured_content=result,
     )
 

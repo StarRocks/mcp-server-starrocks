@@ -372,6 +372,19 @@ For the high-performance **Arrow Flight SQL** connection (enabled via `STARROCKS
     ```
   - **Output:** Text summary plus structured content containing ranked rows with `db`, `table`, and `visit_count`.
 
+- `top_bad_tables`
+
+  - **Description:** Get top bad tables by table health score, following Star Management Studio's `top-bad-tables` logic. It reuses the table-health calculation based on `information_schema.be_tablets` and `information_schema.partitions_meta`, filters out system schemas, orders by `table_health_score` ascending, and returns the lowest-scoring tables.
+  - **Input:**
+    ```json
+    {
+      "db": "optional database/schema filter",
+      "table": "optional table name substring filter",
+      "top_n": 20
+    }
+    ```
+  - **Output:** Text summary plus structured content containing ranked rows with table health fields such as `db`, `table`, `tablet_num`, `replica_score`, `tablet_score`, and `table_health_score`.
+
 - `query_and_plotly_chart`
 
   - **Description:** Executes a SQL query, loads the results into a Pandas DataFrame, and generates a Plotly chart using a provided Python expression. Designed for visualization in supporting UIs.
