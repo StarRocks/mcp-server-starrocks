@@ -36,7 +36,7 @@ import plotly.graph_objs
 from loguru import logger
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
-from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput, remove_ansi_codes
+from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput
 from .db_summary_manager import get_db_summary_manager
 from .table_management_tools import (
     TableManagementTools,

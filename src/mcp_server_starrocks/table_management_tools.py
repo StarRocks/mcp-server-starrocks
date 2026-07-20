@@ -220,7 +220,7 @@ class TableManagementTools:
         if table:
             conditions.append(f"table_name LIKE {_sql_literal('%' + table + '%')}")
 
-        where_sql = "\n            AND ".join(conditions)
+        where_sql = "\n AND ".join(conditions)
         return f"""
             SELECT *
             FROM (
