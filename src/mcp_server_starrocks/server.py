@@ -14,7 +14,6 @@
 import argparse
 import ast
 import asyncio
-import base64
 import csv
 import json
 import math
@@ -545,8 +544,8 @@ def query_and_plotly_chart(
 ) -> ToolResult:
     """
     Executes an SQL query, creates a Pandas DataFrame, generates a Plotly chart
-    using the provided expression, encodes the chart as a base64 PNG image,
-    and returns it along with optional text.
+    using the provided expression, and returns the chart as image content
+    along with optional text.
 
     Args:
         query: The SQL query string to execute.
@@ -621,7 +620,6 @@ def query_and_plotly_chart(
             try:
                 img_bytes = fig.to_image(format='png', width=960, height=720)
                 content.append(Image(data=img_bytes, format='png').to_image_content())
-                structured_content['img_bytes_base64'] = base64.b64encode(img_bytes).decode('ascii')
             except Exception as preview_err:
                 logger.warning(f'PNG preview skipped: {preview_err}')
 
@@ -633,7 +631,6 @@ def query_and_plotly_chart(
                 format = 'jpeg'
             img_bytes = fig.to_image(format=format, width=960, height=720)
             structured_content = result.to_dict()
-            structured_content['img_bytes_base64'] = base64.b64encode(img_bytes).decode('ascii')
             return ToolResult(
                 content=[
                    TextContent(type='text', text=f'dataframe data:\n{df}\nChart generated but for UI only'),
