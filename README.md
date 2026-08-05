@@ -2,6 +2,8 @@
 
 # StarRocks Official MCP Server
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FStarRocks%2Fmcp-server-starrocks.svg)](https://mcptoplist.com/server/glama%2FStarRocks%2Fmcp-server-starrocks)
+
 The StarRocks MCP Server acts as a bridge between AI assistants and StarRocks databases. It allows for direct SQL execution, database exploration, data visualization via charts, and retrieving detailed schema/data overviews without requiring complex client-side setup.
 
 <a href="https://glama.ai/mcp/servers/@StarRocks/mcp-server-starrocks">
