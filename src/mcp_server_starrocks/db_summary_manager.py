@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
+from .db_client import validate_sql_identifier
+
 
 @dataclass
 class ColumnInfo:
@@ -243,7 +245,11 @@ class DatabaseSummaryManager:
         """Generate comprehensive database summary with intelligent prioritization"""
         if not database:
             return "Error: Database name is required"
-        
+        try:
+            validate_sql_identifier(database, "database")
+        except ValueError as e:
+            return f"Error: {e}"
+
         logger.info(f"Generating database summary for {database}, limit={limit}, refresh={refresh}")
         
         # Sync table list
