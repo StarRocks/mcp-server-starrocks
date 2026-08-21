@@ -34,6 +34,33 @@ from .secret_resolver import resolve_password
 # Integers beyond this range lose precision in JSON when parsed by JavaScript clients.
 MAX_SAFE_INTEGER = 2**53 - 1
 
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROC_PATH_RE = re.compile(r"^[A-Za-z0-9_/-]*$")
+_QUERY_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def validate_sql_identifier(value: str, kind: str) -> str:
+    """Reject anything but a plain identifier before it is interpolated unquoted into SQL."""
+    if not value or not _SQL_IDENTIFIER_RE.match(value):
+        raise ValueError(f"Invalid {kind} name: {value!r}")
+    return value
+
+
+def validate_proc_path(value: str) -> str:
+    """Reject anything but path-shaped characters before interpolating into show proc '...'."""
+    if not _PROC_PATH_RE.match(value):
+        raise ValueError(f"Invalid proc path: {value!r}")
+    return value
+
+
+def validate_query_uuid(value: str) -> str:
+    """Reject anything not matching the documented 8-4-4-4-12 hex query id format."""
+    if not _QUERY_UUID_RE.match(value):
+        raise ValueError(f"Invalid query UUID: {value!r}")
+    return value
+
 
 def _safe_json_value(v):
     """Convert integers outside JavaScript's safe integer range to strings.

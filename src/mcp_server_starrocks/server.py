@@ -35,7 +35,15 @@ import plotly.graph_objs
 from loguru import logger
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
-from .db_client import get_db_client, reset_db_connections, ResultSet, PerfAnalysisInput
+from .db_client import (
+    get_db_client,
+    reset_db_connections,
+    ResultSet,
+    PerfAnalysisInput,
+    validate_sql_identifier,
+    validate_proc_path,
+    validate_query_uuid,
+)
 from .db_summary_manager import get_db_summary_manager
 from .table_management_tools import (
     TableManagementTools,
@@ -224,6 +232,8 @@ def get_all_databases() -> str:
 @mcp.resource(uri="starrocks:///{db}/{table}/schema", name="Table Schema",
               description="Get the schema of a table using SHOW CREATE TABLE", mime_type="text/plain")
 def get_table_schema(db: str, table: str) -> str:
+    validate_sql_identifier(db, "database")
+    validate_sql_identifier(table, "table")
     logger.debug(f"Fetching schema for table {db}.{table}")
     return db_client.execute(f"SHOW CREATE TABLE {db}.{table}").to_string()
 
@@ -231,6 +241,7 @@ def get_table_schema(db: str, table: str) -> str:
 @mcp.resource(uri="starrocks:///{db}/tables", name="Database Tables",
               description="List all tables in a specific database", mime_type="text/plain")
 def get_database_tables(db: str) -> str:
+    validate_sql_identifier(db, "database")
     logger.debug(f"Fetching tables from database {db}")
     result = db_client.execute(f"SHOW TABLES FROM {db}")
     logger.debug(f"Found {len(result.rows) if result.success and result.rows else 0} tables in {db}")
@@ -240,6 +251,7 @@ def get_database_tables(db: str) -> str:
 @mcp.resource(uri="proc:///{path*}", name="System internal information", description=SR_PROC_DESC,
               mime_type="text/plain")
 def get_system_internal_information(path: str) -> str:
+    validate_proc_path(path)
     logger.debug(f"Fetching system information for proc path: {path}")
     return db_client.execute(f"show proc '{path}'").to_string(limit=overview_length_limit)
 
@@ -390,7 +402,10 @@ def analyze_query(
         ctx: Context = None,
 ) -> str:
     sid = _safe_session_id(ctx)
+    if db:
+        validate_sql_identifier(db, "database")
     if uuid:
+        validate_query_uuid(uuid)
         logger.info(f"Analyzing query profile for UUID: {uuid}")
         return db_client.execute(f"ANALYZE PROFILE FROM '{uuid}'", db=db, session_id=sid).to_string()
     elif sql:
