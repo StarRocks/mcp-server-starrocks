@@ -849,6 +849,24 @@ def set_session_db(
     return f"Per-session default database set to `{db}`."
 
 
+def _build_cors_config() -> tuple[list[str], bool]:
+    """Resolve CORS origins and whether to allow credentials for HTTP transports.
+
+    Origins default to wide open (unauthenticated local/dev use). Credentials
+    (cookies, HTTP basic auth from a fronting proxy) are enabled only when the
+    operator sets an explicit, non-wildcard origin list via
+    STARROCKS_CORS_ALLOWED_ORIGINS: allow_credentials=True combined with a
+    wildcard origin makes Starlette's CORSMiddleware reflect the request's own
+    Origin header verbatim, so any page could ride a victim's ambient browser
+    credentials against this server.
+    """
+    raw = os.getenv('STARROCKS_CORS_ALLOWED_ORIGINS', '').strip()
+    if not raw:
+        return ["*"], False
+    origins = [origin.strip() for origin in raw.split(',') if origin.strip()]
+    return origins, True
+
+
 async def main():
     parser = argparse.ArgumentParser(description='StarRocks MCP Server')
     parser.add_argument('--mode', choices=['stdio', 'sse', 'http', 'streamable-http'], 
@@ -886,16 +904,20 @@ async def main():
     try:
         # Add CORS middleware for HTTP transports to allow web frontend access
         if args.mode in ['http', 'streamable-http', 'sse']:
+            cors_origins, cors_allow_credentials = _build_cors_config()
             cors_middleware = [
                 Middleware(
                     CORSMiddleware,
-                    allow_origins=["*"],  # Allow all origins for development. In production, specify exact origins
-                    allow_credentials=True,
+                    allow_origins=cors_origins,
+                    allow_credentials=cors_allow_credentials,
                     allow_methods=["*"],  # Allow all HTTP methods
                     allow_headers=["*"],  # Allow all headers
                 )
             ]
-            logger.info(f"CORS enabled for {args.mode} transport - allowing all origins")
+            logger.info(
+                f"CORS enabled for {args.mode} transport - origins={cors_origins}, "
+                f"credentials={cors_allow_credentials}"
+            )
             await mcp.run_async(
                 transport=args.mode, 
                 host=args.host, 
