@@ -221,7 +221,8 @@ You can configure StarRocks connection using either individual environment varia
 - `STARROCKS_PORT`: (Optional) MySQL protocol port of the StarRocks FE service. Defaults to `9030`.
 - `STARROCKS_USER`: (Optional) StarRocks username. Defaults to `root`.
 - `STARROCKS_PASSWORD`: (Optional) StarRocks password. Defaults to empty string.
-- `STARROCKS_PASSWORD_KEYCHAIN_SERVICE`: (Optional, macOS only) Generic password service name to use when reading the password from Keychain. This is only used when no explicit password is provided via `STARROCKS_PASSWORD` or `STARROCKS_URL`.
+- `STARROCKS_PASSWORD_FILE`: (Optional) Path to a UTF-8 text file containing the password. This is useful with file-based secret injection such as systemd credentials. One trailing newline is ignored. This is only used when no explicit password is provided via `STARROCKS_PASSWORD` or `STARROCKS_URL`.
+- `STARROCKS_PASSWORD_KEYCHAIN_SERVICE`: (Optional, macOS only) Generic password service name to use when reading the password from Keychain. This is only used when no explicit password or `STARROCKS_PASSWORD_FILE` is configured.
 - `STARROCKS_PASSWORD_KEYCHAIN_ACCOUNT`: (Optional, macOS only) Generic password account name to use when reading the password from Keychain. Defaults to the resolved StarRocks user.
 - `STARROCKS_DB`: (Optional) Default database to use if not specified in tool arguments or resource URIs. If set, the connection will attempt to `USE` this database. Tools like `table_overview` and `db_overview` will use this if the database part is omitted in their arguments. Defaults to empty (no default database).
 
@@ -237,7 +238,8 @@ You can configure StarRocks connection using either individual environment varia
 Password precedence:
 - A password embedded in `STARROCKS_URL` wins, including an explicit empty password like `user:@host:9030/db`.
 - If `STARROCKS_URL` omits the password, `STARROCKS_PASSWORD` is used when set.
-- If neither explicit password source is set and `STARROCKS_PASSWORD_KEYCHAIN_SERVICE` is configured, the password is read from macOS Keychain.
+- If neither explicit password source is set and `STARROCKS_PASSWORD_FILE` is configured, the password is read from that file.
+- If no explicit password or password file is configured and `STARROCKS_PASSWORD_KEYCHAIN_SERVICE` is set, the password is read from macOS Keychain.
 
 **macOS Keychain example**
 
@@ -260,6 +262,32 @@ export STARROCKS_URL=root@localhost:9030/test_db
 export STARROCKS_PASSWORD_KEYCHAIN_SERVICE=mcp-server-starrocks
 export STARROCKS_PASSWORD_KEYCHAIN_ACCOUNT=root
 ```
+
+**[systemd encrypted credentials](https://systemd.io/CREDENTIALS/) example (systemd 250 or later)**
+
+The server does not invoke `systemd-creds` itself. At deployment time, an administrator encrypts the password; at service startup, systemd decrypts it into the service's credential directory and exposes only the file path to this server.
+
+Create a host-bound encrypted credential without putting the password in shell history:
+
+```bash
+sudo -v
+sudo install -d -m 0700 /etc/credstore.encrypted
+sudo systemd-ask-password -n "StarRocks password:" \
+  | sudo systemd-creds encrypt \
+      --name=starrocks-password \
+      - /etc/credstore.encrypted/starrocks-password.cred
+```
+
+Add the credential to the service unit. The `%d` specifier expands to the service-specific credential directory:
+
+```ini
+[Service]
+LoadCredentialEncrypted=starrocks-password:/etc/credstore.encrypted/starrocks-password.cred
+Environment=STARROCKS_PASSWORD_FILE=%d/starrocks-password
+PrivateMounts=yes
+```
+
+Keep `STARROCKS_PASSWORD` unset and omit the password from `STARROCKS_URL`, then reload the unit and restart the service. The encrypted credential is normally bound to the local host (and to its TPM2 device when available); it is decrypted only while the service is being activated. The service process and administrators with root privileges can still access the plaintext password at runtime. Do not use `systemd-creds encrypt --with-key=null`, which does not provide confidentiality.
 
 ### Additional Configuration
 

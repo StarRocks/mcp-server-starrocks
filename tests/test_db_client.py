@@ -1067,7 +1067,91 @@ class TestParseConnectionUrl:
 
 
 class TestPasswordResolution:
-    """Test password resolution precedence and Keychain integration."""
+    """Test password resolution precedence and external secret sources."""
+
+    def test_password_file_used_when_no_explicit_password(self, tmp_path):
+        """Test STARROCKS_PASSWORD_FILE supplies the password lazily."""
+        password_file = tmp_path / 'starrocks-password'
+        password_file.write_text('file-secret\n', encoding='utf-8')
+
+        with patch.dict(os.environ, {
+            'STARROCKS_USER': 'analytics_user',
+            'STARROCKS_PASSWORD_FILE': str(password_file),
+        }, clear=True):
+            client = DBClient()
+            assert client.connection_params['password'] == ''
+            assert client._get_connection_params()['password'] == 'file-secret'
+
+    def test_explicit_env_password_overrides_password_file(self):
+        """Test STARROCKS_PASSWORD wins without reading the configured file."""
+        with patch.dict(os.environ, {
+            'STARROCKS_PASSWORD': 'env-secret',
+            'STARROCKS_PASSWORD_FILE': '/missing/starrocks-password',
+        }, clear=True):
+            client = DBClient()
+            assert client._get_connection_params()['password'] == 'env-secret'
+
+    def test_url_password_overrides_password_file(self):
+        """Test an embedded URL password wins without reading the configured file."""
+        with patch.dict(os.environ, {
+            'STARROCKS_URL': 'url_user:url-secret@db.example.com:9030/production',
+            'STARROCKS_PASSWORD_FILE': '/missing/starrocks-password',
+        }, clear=True):
+            client = DBClient()
+            assert client._get_connection_params()['password'] == 'url-secret'
+
+    def test_password_file_used_when_url_omits_password(self, tmp_path):
+        """Test a URL without a password can use STARROCKS_PASSWORD_FILE."""
+        password_file = tmp_path / 'starrocks-password'
+        password_file.write_text('file-secret', encoding='utf-8')
+
+        with patch.dict(os.environ, {
+            'STARROCKS_URL': 'url_user@db.example.com:9030/production',
+            'STARROCKS_PASSWORD_FILE': str(password_file),
+        }, clear=True):
+            client = DBClient()
+            assert client._get_connection_params()['password'] == 'file-secret'
+
+    def test_password_file_overrides_keychain(self, tmp_path):
+        """Test password files are preferred over the optional Keychain fallback."""
+        password_file = tmp_path / 'starrocks-password'
+        password_file.write_text('file-secret', encoding='utf-8')
+
+        with patch.dict(os.environ, {
+            'STARROCKS_PASSWORD_FILE': str(password_file),
+            'STARROCKS_PASSWORD_KEYCHAIN_SERVICE': 'mcp-server-starrocks',
+        }, clear=True):
+            with patch('src.mcp_server_starrocks.secret_resolver.subprocess.run') as mock_run:
+                client = DBClient()
+                assert client._get_connection_params()['password'] == 'file-secret'
+
+        mock_run.assert_not_called()
+
+    def test_password_file_preserves_embedded_carriage_return(self, tmp_path):
+        """Test only one trailing line ending is stripped and an embedded CR survives."""
+        password_file = tmp_path / 'starrocks-password'
+        password_file.write_bytes(b'file\rsecret\r\n')
+
+        with patch.dict(os.environ, {
+            'STARROCKS_PASSWORD_FILE': str(password_file),
+        }, clear=True):
+            client = DBClient()
+            assert client._get_connection_params()['password'] == 'file\rsecret'
+
+    def test_unreadable_password_file_fails_closed(self, tmp_path):
+        """Test a configured but unreadable file does not fall back to another source."""
+        missing_file = tmp_path / 'missing-password'
+
+        with patch.dict(os.environ, {
+            'STARROCKS_PASSWORD_FILE': str(missing_file),
+            'STARROCKS_PASSWORD_KEYCHAIN_SERVICE': 'mcp-server-starrocks',
+        }, clear=True):
+            with patch('src.mcp_server_starrocks.secret_resolver.subprocess.run') as mock_run:
+                client = DBClient()
+                with pytest.raises(SecretResolutionError, match='STARROCKS_PASSWORD_FILE'):
+                    client._get_connection_params()
+
+        mock_run.assert_not_called()
 
     def test_explicit_env_password_overrides_keychain_when_url_omits_password(self):
         """Test STARROCKS_PASSWORD takes precedence when URL omits the password."""
@@ -1174,13 +1258,15 @@ class TestPasswordResolution:
         )
 
     def test_explicit_empty_url_password_disables_keychain_fallback(self):
-        """Test an explicit empty password in STARROCKS_URL bypasses Keychain lookup."""
+        """Test an explicit empty URL password bypasses file and Keychain lookup."""
         with patch.dict(os.environ, {
             'STARROCKS_URL': 'url_user:@db.example.com:9030/production',
+            'STARROCKS_PASSWORD_FILE': '/missing/starrocks-password',
             'STARROCKS_PASSWORD_KEYCHAIN_SERVICE': 'mcp-server-starrocks',
         }, clear=True):
             with patch('src.mcp_server_starrocks.secret_resolver.subprocess.run') as mock_run:
                 client = DBClient()
+                assert client._get_connection_params()['password'] == ''
 
         assert client.connection_params['password'] == ''
         mock_run.assert_not_called()

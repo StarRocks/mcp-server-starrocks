@@ -34,18 +34,34 @@ def resolve_password(*, user: str, explicit_password: str, explicit_password_pro
     """
     Resolve a StarRocks password.
 
-    Explicitly configured passwords always win. When no explicit password is
-    provided and macOS Keychain lookup is configured, the password is loaded via
-    the native `security` CLI.
+    Explicitly configured passwords always win. Otherwise, an optional password
+    file is checked before falling back to macOS Keychain lookup.
     """
     if explicit_password_provided:
         return explicit_password
+
+    password_file = os.getenv('STARROCKS_PASSWORD_FILE')
+    if password_file:
+        return read_password_from_file(password_file)
 
     lookup = get_keychain_lookup_config(user)
     if lookup is None:
         return explicit_password
 
     return read_password_from_macos_keychain(lookup)
+
+
+def read_password_from_file(path: str) -> str:
+    """Read a password from a UTF-8 text file without exposing its contents."""
+    try:
+        # newline='' disables universal-newline translation so an embedded '\r'
+        # stays part of the password; only one trailing line ending is stripped.
+        with open(path, 'r', encoding='utf-8', newline='') as password_file:
+            return password_file.read().removesuffix('\n').removesuffix('\r')
+    except (OSError, UnicodeError) as exc:
+        raise SecretResolutionError(
+            f"Unable to read StarRocks password from STARROCKS_PASSWORD_FILE '{path}': {exc}"
+        ) from exc
 
 
 def get_keychain_lookup_config(user: str) -> Optional[KeychainLookupConfig]:

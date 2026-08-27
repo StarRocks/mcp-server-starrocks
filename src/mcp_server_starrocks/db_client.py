@@ -299,7 +299,7 @@ def remove_ansi_codes(text):
 
 
 def _resolve_connection_password(user: str, explicit_password: str, explicit_password_provided: bool) -> str:
-    """Resolve password from explicit config first, then optional Keychain lookup."""
+    """Resolve password from explicit config, then optional file or Keychain lookup."""
     if not explicit_password_provided and 'STARROCKS_PASSWORD' in os.environ:
         explicit_password = os.environ['STARROCKS_PASSWORD']
         explicit_password_provided = True
