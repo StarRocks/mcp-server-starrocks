@@ -352,6 +352,12 @@ class DBClient:
             'connect_timeout': int(os.getenv('STARROCKS_CONNECTION_TIMEOUT', '10')),
             'use_pure': os.getenv('STARROCKS_USE_PURE', 'false').lower() in ('true', '1', 'yes'),
         })
+        # connection_timeout above only bounds the TCP handshake, not waiting for a
+        # query's results; only set read_timeout when asked, so unset behavior is
+        # unchanged (blocking, as today).
+        query_timeout = os.getenv('STARROCKS_QUERY_TIMEOUT')
+        if query_timeout is not None:
+            self.connection_params['read_timeout'] = int(query_timeout)
         # Apply optional TLS/SSL options for the MySQL protocol connection.
         self.connection_params.update(_build_mysql_ssl_options())
         self.default_database = self.connection_params.get('database')

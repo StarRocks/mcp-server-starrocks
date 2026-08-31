@@ -225,6 +225,7 @@ You can configure StarRocks connection using either individual environment varia
 - `STARROCKS_PASSWORD_KEYCHAIN_SERVICE`: (Optional, macOS only) Generic password service name to use when reading the password from Keychain. This is only used when no explicit password or `STARROCKS_PASSWORD_FILE` is configured.
 - `STARROCKS_PASSWORD_KEYCHAIN_ACCOUNT`: (Optional, macOS only) Generic password account name to use when reading the password from Keychain. Defaults to the resolved StarRocks user.
 - `STARROCKS_DB`: (Optional) Default database to use if not specified in tool arguments or resource URIs. If set, the connection will attempt to `USE` this database. Tools like `table_overview` and `db_overview` will use this if the database part is omitted in their arguments. Defaults to empty (no default database).
+- `STARROCKS_QUERY_TIMEOUT`: (Optional) Number of seconds to wait for a query's results before giving up, as an integer. Unset by default, which waits indefinitely, matching prior behavior. Set this if a stuck or long-running query should fail instead of blocking a tool call forever.
 
 **Option 2: Connection URL (takes precedence over individual variables)**
 

@@ -48,7 +48,22 @@ class TestDBClient:
         assert db_client.default_database is None
         assert db_client._connection_pool is None
         assert db_client._adbc_connection is None
-    
+
+    def test_read_timeout_not_set_by_default(self):
+        """No STARROCKS_QUERY_TIMEOUT means no read_timeout is passed to the connector,
+        preserving today's blocking (unbounded) wait for query results."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('STARROCKS_QUERY_TIMEOUT', None)
+            client = DBClient()
+        assert 'read_timeout' not in client.connection_params
+
+    def test_read_timeout_set_from_query_timeout_env(self):
+        """STARROCKS_QUERY_TIMEOUT wires into the connection pool's read_timeout, the
+        connector setting that bounds how long a query is allowed to run."""
+        with patch.dict(os.environ, {'STARROCKS_QUERY_TIMEOUT': '45'}):
+            client = DBClient()
+        assert client.connection_params['read_timeout'] == 45
+
     def test_singleton_pattern(self):
         """Test that get_db_client returns the same instance."""
         client1 = get_db_client()
