@@ -47,6 +47,7 @@ from .db_client import (
     validate_sql_identifier,
     validate_proc_path,
     validate_query_uuid,
+    validate_dql_only,
 )
 from .db_summary_manager import get_db_summary_manager
 from .query_profile_analytics import (
@@ -331,7 +332,7 @@ def _get_table_details(db_name, table_name, limit=None):
 
 # tools
 
-@mcp.tool(description="Execute a SELECT query or commands that return a ResultSet. Set output_file to write the full result to disk instead of returning it inline (useful for large results)." + description_suffix)
+@mcp.tool(description="Execute a read-only SELECT/SHOW/DESCRIBE/EXPLAIN query. Set output_file to write the full result to disk instead of returning it inline (useful for large results). Use write_query for anything that mutates data." + description_suffix)
 def read_query(query: Annotated[str, Field(description="SQL query to execute")],
                db: Annotated[str|None, Field(description="database")] = None,
                output_file: Annotated[str|None, Field(
@@ -341,6 +342,7 @@ def read_query(query: Annotated[str, Field(description="SQL query to execute")],
                    description="Override file format: csv|tsv|json|jsonl. If omitted, inferred from output_file extension; defaults to csv."
                )] = None,
                ctx: Context = None) -> ToolResult:
+    validate_dql_only(query)
     logger.info(f"Executing read query: {query[:100]}{'...' if len(query) > 100 else ''}")
     result = db_client.execute(query, db=db, session_id=_safe_session_id(ctx))
     if not result.success:
@@ -576,7 +578,7 @@ def one_line_summary(text: str, limit:int=100) -> str:
     return single_line
 
 
-@mcp.tool(description="using sql `query` to extract data from database, then using python `plotly_expr` to generate a chart for UI to display" + description_suffix)
+@mcp.tool(description="using a read-only sql `query` to extract data from database, then using python `plotly_expr` to generate a chart for UI to display" + description_suffix)
 def query_and_plotly_chart(
         query: Annotated[str, Field(description="SQL query to execute")],
         plotly_expr: Annotated[
@@ -603,6 +605,7 @@ def query_and_plotly_chart(
         or just types.TextContent in case of an error or no data.
     """
     try:
+        validate_dql_only(query)
         logger.info(f'query_and_plotly_chart query:{one_line_summary(query)}, plotly:{one_line_summary(plotly_expr)} format:{format}, db:{db}')
         result = db_client.execute(query, db=db, return_format="pandas", session_id=_safe_session_id(ctx))
         errmsg = None

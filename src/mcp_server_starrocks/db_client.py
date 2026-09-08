@@ -39,6 +39,9 @@ _PROC_PATH_RE = re.compile(r"^[A-Za-z0-9_/-]*$")
 _QUERY_UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+_DQL_LEADING_NOISE_RE = re.compile(r"^(?:\x2d\x2d[^\n]*\n|\#[^\n]*\n|/\*.*?\*/|\s)*", re.DOTALL)
+_DQL_FIRST_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_DQL_ALLOWED_KEYWORDS = {"select", "show", "describe", "desc", "explain", "with"}
 
 
 def validate_sql_identifier(value: str, kind: str) -> str:
@@ -60,6 +63,21 @@ def validate_query_uuid(value: str) -> str:
     if not _QUERY_UUID_RE.match(value):
         raise ValueError(f"Invalid query UUID: {value!r}")
     return value
+
+
+def validate_dql_only(statement: str) -> str:
+    """Reject anything whose first keyword is not SELECT/SHOW/DESCRIBE/EXPLAIN/WITH."""
+    if not statement or not statement.strip():
+        raise ValueError("Empty query is not a read-only statement.")
+    body = _DQL_LEADING_NOISE_RE.sub("", statement, count=1)
+    match = _DQL_FIRST_WORD_RE.match(body)
+    keyword = match.group(0).lower() if match else ""
+    if keyword not in _DQL_ALLOWED_KEYWORDS:
+        raise ValueError(
+            "Only read-only statements (SELECT/SHOW/DESCRIBE/EXPLAIN/WITH) are allowed here; "
+            f"got {statement.strip()[:60]!r}"
+        )
+    return statement
 
 
 def _safe_json_value(v):
