@@ -25,7 +25,11 @@ import time
 import tempfile
 from fastmcp import FastMCP, Context
 from fastmcp.utilities.types import Image
-from fastmcp.tools.tool import ToolResult
+try:
+    # fastmcp >= 3 re-exports ToolResult from the package (tool.py was renamed to base.py)
+    from fastmcp.tools import ToolResult
+except ImportError:  # fastmcp 2.x
+    from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent, ImageContent
 from fastmcp.exceptions import ToolError
 from typing import Annotated, Optional
