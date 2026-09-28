@@ -133,6 +133,46 @@ class TestServerResourceAndToolGuards:
         assert self.captured == ["ANALYZE PROFILE FROM '550e8400-e29b-41d4-a716-446655440000'"]
 
 
+class TestTableOverviewGuard:
+    """table_overview/_get_table_details split 'db.table' into raw identifiers and
+    interpolated them unvalidated (same class of bug as issue #33, but that issue's
+    fix (PR #49) never covered this call site). A malicious value must be rejected
+    before db_client.execute is ever called, and a legitimate value must still
+    produce the same SQL as before."""
+
+    def setup_method(self):
+        self.original_db_client = server.db_client
+        server.db_client, self.captured = _mock_db_client()
+
+    def teardown_method(self):
+        server.db_client = self.original_db_client
+
+    def test_table_overview_rejects_malicious_table(self):
+        result = server.table_overview(table="mydb.x`; DROP TABLE secrets;#")
+        assert self.captured == []
+        assert "Invalid table name" in result
+
+    def test_table_overview_rejects_malicious_db(self):
+        result = server.table_overview(table="mydb`; DROP TABLE secrets;#.mytable")
+        assert self.captured == []
+        assert "Invalid database name" in result
+
+    def test_table_overview_legitimate(self):
+        def fake_execute(query, *args, **kwargs):
+            self.captured.append(query)
+            result = MagicMock()
+            result.success = True
+            result.rows = [[1]]
+            result.column_names = ["c"]
+            result.to_string.return_value = "<ok>"
+            return result
+
+        server.db_client.execute = fake_execute
+        result = server.table_overview(table="mydb.mytable")
+        assert self.captured[0] == "SELECT COUNT(*) FROM `mydb`.`mytable`"
+        assert "Total rows" in result
+
+
 class TestDbSummaryManagerGuard:
     def test_get_database_summary_rejects_malicious_database_before_any_sql(self):
         client, captured = _mock_db_client()
