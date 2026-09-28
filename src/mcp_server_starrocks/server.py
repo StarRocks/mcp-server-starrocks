@@ -720,6 +720,9 @@ def table_overview(
             logger.error(f"No database specified for table {table_name}")
             return f"Error: Database name not specified for table '{table_name}' and no default database is set."
 
+        validate_sql_identifier(db_name, "database")
+        validate_sql_identifier(table_name, "table")
+
         cache_key = (db_name, table_name)
 
         # Check cache
