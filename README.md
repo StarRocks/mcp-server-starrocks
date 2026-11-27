@@ -376,6 +376,33 @@ For the high-performance **Arrow Flight SQL** connection (enabled via `STARROCKS
 
 > Security note: avoid storing plaintext passwords directly in `mcp.json`. Prefer injecting `STARROCKS_PASSWORD` (and certificate paths) from a secrets manager or environment, and never commit credentials to version control.
 
+### OAuth2 Login (per-user identity)
+
+StarRocks (v3.5+) supports users created with `IDENTIFIED WITH authentication_oauth2`, who sign in through an OAuth 2.0 identity provider (Keycloak, Okta, Amazon Cognito, ...) instead of a password. Set `STARROCKS_AUTH_MODE=oauth2` and each MCP session signs in as its own StarRocks user, so queries run with that person's roles and privileges rather than one shared account.
+
+How it works: the `oauth2_login` tool opens a connection as the given user, and StarRocks answers with an authorization URL. The user opens it in a browser and signs in with the identity provider, which redirects to the FE (`redirect_url`, usually `http://<fe_host>:<fe_http_port>/api/oauth2`). From then on, the other tools run on that signed-in connection. No password or token passes through the MCP server, and no MySQL client plugin or TLS is needed: this is the StarRocks flow for MySQL clients that cannot open a browser.
+
+- `STARROCKS_AUTH_MODE`: (Optional) `password` (default) or `oauth2`. Not supported together with Arrow Flight SQL.
+- `STARROCKS_USER`: (Optional in this mode) Default user for `oauth2_login`. When set, the first tool call of a session also starts the login and returns the URL.
+- `STARROCKS_OAUTH2_SESSION_SCOPE`: (Optional) `session` (default) keeps one login per MCP session. `server` keeps a single login for the whole server, for a personal server on stdio or behind your own access control; every client of the server then acts as that user.
+- `STARROCKS_OAUTH2_IDLE_TIMEOUT`: (Optional) Seconds after which an unused login is closed. Defaults to `3600`.
+
+Notes:
+
+- A login belongs to one connection, so in this mode each session uses a dedicated connection instead of the pool, and its calls run one at a time. `STARROCKS_POOL_SIZE` does not apply.
+- The table overview and database summary caches are shared by all sessions, so in this mode they are bypassed and every call reads with the caller's own login.
+- MCP clients on the stateless `2026-07-28` protocol have no session to keep a login in when connecting over HTTP without authentication; such calls are refused with an explanation. Use stdio, a client on a handshake-era protocol version, or `STARROCKS_OAUTH2_SESSION_SCOPE=server`.
+- Each authorization URL is single-use and expires after the FE's `oauth2_connect_wait_timeout` (300 seconds by default). Refreshing the browser's success page re-sends the used code and shows `invalid_grant`; the login has already succeeded.
+
+```json
+"env": {
+  "STARROCKS_HOST": "your-fe-host",
+  "STARROCKS_PORT": "9030",
+  "STARROCKS_AUTH_MODE": "oauth2",
+  "STARROCKS_USER": "alice"
+}
+```
+
 - `MCP_TRANSPORT_MODE`: (Optional) Communication mode that specifies how the MCP Server exposes its services. Available options:
   - `stdio` (default): Communicates through standard input/output, suitable for MCP Host hosting.
   - `streamable-http` (Streamable HTTP): Starts as a Streamable HTTP Server, supporting RESTful API calls.
@@ -384,6 +411,23 @@ For the high-performance **Arrow Flight SQL** connection (enabled via `STARROCKS
 ## Components
 
 ### Tools
+
+- `oauth2_login` (only with `STARROCKS_AUTH_MODE=oauth2`)
+
+  - **Description:** Sign in to StarRocks as a user created with `IDENTIFIED WITH authentication_oauth2`. Calling it again switches user or gives a fresh URL.
+  - **Input:**
+    ```json
+    {
+      "user": "StarRocks user name (optional when STARROCKS_USER is set)"
+    }
+    ```
+  - **Output:** The authorization URL to open in a browser, or a confirmation when the user is already signed in.
+
+- `oauth2_logout` (only with `STARROCKS_AUTH_MODE=oauth2`)
+
+  - **Description:** Sign out of StarRocks for this MCP session and close its connection.
+  - **Input:** None
+  - **Output:** A confirmation message.
 
 - `read_query`
 
