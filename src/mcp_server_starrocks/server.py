@@ -722,8 +722,9 @@ def table_overview(
 
         cache_key = (db_name, table_name)
 
-        # Check cache
-        if not refresh and cache_key in global_table_overview_cache:
+        # Check cache. It is shared by every session, so with per-user OAuth2 logins it could
+        # hand one user's sample rows to another: always fetch with the caller's own login.
+        if not refresh and not db_client.oauth2_enabled and cache_key in global_table_overview_cache:
             logger.debug(f"Using cached overview for {db_name}.{table_name}")
             return global_table_overview_cache[cache_key]
 
@@ -817,8 +818,10 @@ def db_summary(
             logger.error("Database summary called without database name")
             return "Error: Database name not provided and no default database is set."
         
-        # Use the database summary manager
-        summary = db_summary_manager.get_database_summary(db_name, limit=limit, refresh=refresh)
+        # Use the database summary manager. Its cache is shared by every session, so with
+        # per-user OAuth2 logins it is refreshed on each call to only show what the caller can see.
+        summary = db_summary_manager.get_database_summary(
+            db_name, limit=limit, refresh=refresh or db_client.oauth2_enabled)
         logger.info(f"Database summary completed for {db_name}")
         return summary
         
@@ -851,6 +854,22 @@ def set_session_db(
         return f"Failed to switch session to `{db}`: {probe.error_message}"
     db_client.set_session_default_db(session_id, db)
     return f"Per-session default database set to `{db}`."
+
+
+if db_client.oauth2_enabled:
+    @mcp.tool(description="Sign in to StarRocks as a user created with IDENTIFIED WITH authentication_oauth2. "
+                          "Returns a URL the user must open in a browser to sign in with the identity provider; "
+                          "other tools work once that is done. Call again to switch user or to get a fresh URL.")
+    def oauth2_login(
+            user: Annotated[str | None, Field(
+                description="StarRocks user name to sign in as. Optional when the server sets STARROCKS_USER.")] = None,
+            ctx: Context = None,
+    ) -> str:
+        return db_client.oauth2_login(user, _safe_session_id(ctx))
+
+    @mcp.tool(description="Sign out of StarRocks for this MCP session and close its connection.")
+    def oauth2_logout(ctx: Context = None) -> str:
+        return db_client.oauth2_logout(_safe_session_id(ctx))
 
 
 def _build_cors_config() -> tuple[list[str], bool]:
@@ -903,8 +922,10 @@ async def main():
             reset_db_connections()
         return
 
-    # Start connection health checker
-    start_connection_health_checker()
+    # Start connection health checker. With OAuth2 logins there is no server-wide connection
+    # to check, and each session's connection reports its own state.
+    if not db_client.oauth2_enabled:
+        start_connection_health_checker()
     try:
         # Add CORS middleware for HTTP transports to allow web frontend access
         if args.mode in ['http', 'streamable-http', 'sse']:

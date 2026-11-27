@@ -18,7 +18,7 @@ import time
 import re
 import json
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Optional, List, Any, Union, Literal, TypedDict, NotRequired
 from dataclasses import dataclass
 import mysql.connector
@@ -28,6 +28,12 @@ import adbc_driver_flightsql.dbapi as flight_sql
 from adbc_driver_manager import Error as adbcError
 import pandas as pd
 from .secret_resolver import resolve_password
+from .oauth2_session import (
+    OAuth2SessionManager,
+    NoStableMCPSession,
+    current_mcp_session_key,
+    extract_login_url,
+)
 
 
 # JavaScript Number.MAX_SAFE_INTEGER (2^53 - 1)
@@ -311,6 +317,10 @@ def _resolve_connection_password(user: str, explicit_password: str, explicit_pas
     )
 
 
+class OAuth2LoginRequired(Exception):
+    """The MCP session has no usable StarRocks login; the message says what to do next."""
+
+
 class DBClient:
     """Simplified database client for StarRocks connection and query execution."""
     
@@ -361,6 +371,28 @@ class DBClient:
         # Apply optional TLS/SSL options for the MySQL protocol connection.
         self.connection_params.update(_build_mysql_ssl_options())
         self.default_database = self.connection_params.get('database')
+
+        # STARROCKS_AUTH_MODE=oauth2: each MCP session signs in as its own StarRocks user
+        # (created with IDENTIFIED WITH authentication_oauth2) on a dedicated connection.
+        self._oauth2 = None
+        auth_mode = os.getenv('STARROCKS_AUTH_MODE', 'password').strip().lower()
+        if auth_mode == 'oauth2':
+            if self.enable_arrow_flight_sql:
+                raise ValueError("STARROCKS_AUTH_MODE=oauth2 is not supported with Arrow Flight SQL "
+                                 "(STARROCKS_FE_ARROW_FLIGHT_SQL_PORT); use the MySQL protocol.")
+            # Only a user that was configured explicitly is a default for login.
+            self.oauth2_default_user = self.connection_params['user'] \
+                if os.getenv('STARROCKS_URL') or os.getenv('STARROCKS_USER') else None
+            self._oauth2_scope = os.getenv('STARROCKS_OAUTH2_SESSION_SCOPE', 'session').strip().lower()
+            if self._oauth2_scope not in ('session', 'server'):
+                raise ValueError("STARROCKS_OAUTH2_SESSION_SCOPE must be 'session' or 'server'")
+            excluded = {'user', 'password', 'database', 'pool_size', 'pool_name', 'pool_reset_session'}
+            self._oauth2 = OAuth2SessionManager(
+                connect_params={k: v for k, v in self.connection_params.items() if k not in excluded},
+                idle_timeout=int(os.getenv('STARROCKS_OAUTH2_IDLE_TIMEOUT', '3600')),
+            )
+        elif auth_mode != 'password':
+            raise ValueError("STARROCKS_AUTH_MODE must be 'password' or 'oauth2'")
 
         # MySQL connection pool
         self._connection_pool = None
@@ -524,6 +556,78 @@ class DBClient:
             self._reset_adbc_connection()
 
 
+    @property
+    def oauth2_enabled(self) -> bool:
+        return self._oauth2 is not None
+
+    def _oauth2_session_key(self, session_id: Optional[str]) -> Optional[str]:
+        """Key of the login to use: the client of the MCP request being served.
+
+        ``session_id`` is only a fallback for calls made outside an MCP request: on
+        2026-07-28 connections it changes with every request, so it cannot hold a login.
+        """
+        if self._oauth2_scope == 'server':
+            return 'server'
+        return current_mcp_session_key() or session_id
+
+    def oauth2_login(self, user: Optional[str], session_id: Optional[str]) -> str:
+        """Open a connection as ``user`` for this MCP session; return what the user must do next."""
+        user = user or self.oauth2_default_user
+        if not user:
+            return "Error: no StarRocks user given and STARROCKS_USER is not set."
+        try:
+            key = self._oauth2_session_key(session_id)
+        except NoStableMCPSession as e:
+            return f"Error: {e}"
+        if not key:
+            return "Error: no MCP session id available; cannot keep a login for this session."
+        try:
+            session = self._oauth2.start(key, user)
+        except MySQLError as e:
+            return f"Error connecting to StarRocks as '{user}': {e}"
+        if session.conn.login_url:
+            return session.login_required_message()
+        return f"Signed in to StarRocks as '{user}'."
+
+    def oauth2_logout(self, session_id: Optional[str]) -> str:
+        try:
+            key = self._oauth2_session_key(session_id)
+        except NoStableMCPSession as e:
+            return f"Error: {e}"
+        session = self._oauth2.end(key) if key else None
+        if session is None:
+            return "No StarRocks login for this session."
+        return f"Signed out of StarRocks user '{session.user}'."
+
+    @contextmanager
+    def _oauth2_connection(self, session_id: Optional[str]):
+        """Yield the signed-in connection of this MCP session, or raise OAuth2LoginRequired."""
+        try:
+            key = self._oauth2_session_key(session_id)
+        except NoStableMCPSession as e:
+            raise OAuth2LoginRequired(str(e))
+        session = self._oauth2.get(key) if key else None
+        if session is None:
+            if not self.oauth2_default_user or not key:
+                raise OAuth2LoginRequired(
+                    "Not signed in to StarRocks. Call the oauth2_login tool with your StarRocks user name first.")
+            message = self.oauth2_login(None, key)
+            session = self._oauth2.get(key)
+            if session is None:
+                raise OAuth2LoginRequired(message)
+        with session.lock:
+            try:
+                signed_in = session.conn.finish_login()
+            except MySQLError as e:
+                self._oauth2.end(key)
+                raise OAuth2LoginRequired(
+                    f"Lost the StarRocks connection of user '{session.user}' ({e}). Call oauth2_login again.")
+            if not signed_in:
+                raise OAuth2LoginRequired(session.login_required_message())
+            yield session.conn
+            if not session.conn.is_connected():
+                self._oauth2.end(key)
+
     def _execute(self, conn, statement: str, params=None, return_format:str="raw") -> ResultSet:
         cursor = None
         start_time = time.time()
@@ -672,6 +776,8 @@ class DBClient:
             )
 
         target_db = self._resolve_target_db(session_id, db)
+        if self._oauth2 is not None:
+            return self._execute_oauth2(statement, target_db, return_format, session_id)
         # ADBC uses a singleton connection shared across MCP sessions; serialize
         # USE+query as one atomic block so concurrent callers don't see each
         # other's USE state. Pool mode hands out a private connection per call,
@@ -716,17 +822,48 @@ class DBClient:
                     except:
                         pass
 
+    def _execute_oauth2(self, statement: str, target_db: Optional[str], return_format: str,
+                        session_id: Optional[str]) -> ResultSet:
+        try:
+            with self._oauth2_connection(session_id) as conn:
+                if target_db:
+                    use_result = self._execute(conn, f"USE `{target_db}`")
+                    if not use_result.success:
+                        return ResultSet(
+                            success=False,
+                            error_message=f"Error switching to database '{target_db}': {use_result.error_message}",
+                            execution_time=0
+                        )
+                result = self._execute(conn, statement, None, return_format)
+                # StarRocks can ask for a new login on an established connection.
+                login_url = extract_login_url(result.error_message) if not result.success else None
+                if login_url:
+                    conn.login_url = login_url
+                    result.error_message = (f"StarRocks OAuth2 login required. Open this URL in a browser "
+                                            f"and sign in, then retry: {login_url}")
+                return result
+        except OAuth2LoginRequired as e:
+            return ResultSet(success=False, error_message=str(e))
+
     def collect_perf_analysis_input(self, query: str, db: Optional[str] = None,
                                     session_id: Optional[str] = None) -> PerfAnalysisInput:
         target_db = self._resolve_target_db(session_id, db)
+        if self._oauth2 is not None:
+            try:
+                with self._oauth2_connection(session_id) as conn:
+                    return self._collect_perf_analysis_input_locked(query, target_db, conn)
+            except OAuth2LoginRequired as e:
+                return {"error_message": str(e)}
         outer_lock = self._adbc_lock if self.enable_arrow_flight_sql else nullcontext()
         with outer_lock:
             return self._collect_perf_analysis_input_locked(query, target_db)
 
-    def _collect_perf_analysis_input_locked(self, query: str, target_db: Optional[str]) -> PerfAnalysisInput:
+    def _collect_perf_analysis_input_locked(self, query: str, target_db: Optional[str],
+                                            session_conn=None) -> PerfAnalysisInput:
         conn = None
         try:
-            conn = self._get_connection()
+            # An OAuth2 session's connection belongs to the session: use it, never close it.
+            conn = session_conn or self._get_connection()
             # Always USE the resolved target db (see execute() for rationale).
             if target_db:
                 cursor_temp = conn.cursor()
@@ -783,7 +920,7 @@ class DBClient:
         except Exception as e:
             return {"error_message":str(e)}
         finally:
-            if conn and not self.enable_arrow_flight_sql:
+            if conn and not self.enable_arrow_flight_sql and session_conn is None:
                 try:
                     conn.close()
                 except:
