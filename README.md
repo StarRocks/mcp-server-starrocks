@@ -406,6 +406,7 @@ Notes:
 - A login belongs to one connection, so in this mode each session uses a dedicated connection instead of the pool, and its calls run one at a time. `STARROCKS_POOL_SIZE` does not apply.
 - The table overview and database summary caches are shared by all sessions, so in this mode they are bypassed and every call reads with the caller's own login.
 - MCP clients on the stateless `2026-07-28` protocol have no session to keep a login in when connecting over HTTP without authentication; such calls are refused with an explanation. Use stdio, a client on a handshake-era protocol version, or `STARROCKS_OAUTH2_SESSION_SCOPE=server`.
+- Only open sign-in links you requested yourself. A StarRocks authorization URL is bound to the connection that asked for it, not to the browser that opens it: whoever started the login gets the session once the named user signs in. Keep an `oauth2` server on localhost or behind your own access control, since anyone who can reach it can start a login under any user name.
 - Each authorization URL is single-use and expires after the FE's `oauth2_connect_wait_timeout` (300 seconds by default). Refreshing the browser's success page re-sends the used code and shows `invalid_grant`; the login has already succeeded.
 
 ```json
