@@ -376,13 +376,27 @@ For the high-performance **Arrow Flight SQL** connection (enabled via `STARROCKS
 
 > Security note: avoid storing plaintext passwords directly in `mcp.json`. Prefer injecting `STARROCKS_PASSWORD` (and certificate paths) from a secrets manager or environment, and never commit credentials to version control.
 
+### Authentication Modes
+
+The server has two authentication modes, chosen with `STARROCKS_AUTH_MODE`. The default needs no change to existing setups.
+
+| | `password` (default) | `oauth2` |
+|---|---|---|
+| Who queries run as | One account from `STARROCKS_USER` / `STARROCKS_PASSWORD` / `STARROCKS_URL`, shared by every client | Each MCP session's own StarRocks user, with that user's roles and privileges |
+| StarRocks user | Any password user | Created with `IDENTIFIED WITH authentication_oauth2` |
+| Sign-in | None, the server holds the credentials | Each user signs in through the identity provider in a browser |
+| Connections | Shared pool | One dedicated connection per session |
+| Best for | Local development, single-user setups, service accounts | Shared servers where access must follow each person's StarRocks roles |
+
+To switch, set `STARROCKS_AUTH_MODE` and restart the server; unset it (or set `password`) to go back.
+
 ### OAuth2 Login (per-user identity)
 
-StarRocks (v3.5+) supports users created with `IDENTIFIED WITH authentication_oauth2`, who sign in through an OAuth 2.0 identity provider (Keycloak, Okta, Amazon Cognito, ...) instead of a password. Set `STARROCKS_AUTH_MODE=oauth2` and each MCP session signs in as its own StarRocks user, so queries run with that person's roles and privileges rather than one shared account.
+StarRocks (v3.5+) supports users created with `IDENTIFIED WITH authentication_oauth2`, who sign in through an OAuth 2.0 identity provider (Keycloak, Okta, Amazon Cognito, ...) instead of a password. Set `STARROCKS_AUTH_MODE=oauth2` and each MCP session signs in as its own StarRocks user, so queries run with that person's roles and privileges rather than one shared account. Grant privileges to those users, or to roles they hold, as for any StarRocks user.
 
 How it works: the `oauth2_login` tool opens a connection as the given user, and StarRocks answers with an authorization URL. The user opens it in a browser and signs in with the identity provider, which redirects to the FE (`redirect_url`, usually `http://<fe_host>:<fe_http_port>/api/oauth2`). From then on, the other tools run on that signed-in connection. No password or token passes through the MCP server, and no MySQL client plugin or TLS is needed: this is the StarRocks flow for MySQL clients that cannot open a browser.
 
-- `STARROCKS_AUTH_MODE`: (Optional) `password` (default) or `oauth2`. Not supported together with Arrow Flight SQL.
+- `STARROCKS_AUTH_MODE`: (Optional) `password` (default, the single shared account described above) or `oauth2`. `oauth2` is not supported together with Arrow Flight SQL.
 - `STARROCKS_USER`: (Optional in this mode) Default user for `oauth2_login`. When set, the first tool call of a session also starts the login and returns the URL.
 - `STARROCKS_OAUTH2_SESSION_SCOPE`: (Optional) `session` (default) keeps one login per MCP session. `server` keeps a single login for the whole server, for a personal server on stdio or behind your own access control; every client of the server then acts as that user.
 - `STARROCKS_OAUTH2_IDLE_TIMEOUT`: (Optional) Seconds after which an unused login is closed. Defaults to `3600`.
